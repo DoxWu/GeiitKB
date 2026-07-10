@@ -4,8 +4,10 @@
  * 覆盖范围：
  *   - 真实 API 函数：login, refreshToken, logout, getCurrentUser, register
  *     （mock apiClient 验证调用参数和返回值）
- *   - Mock 函数：submitRegisterApply, getApplicationStatus, setPassword
- *     （验证 localStorage 存储和分支逻辑）
+ *   - 注册审批流程：submitRegisterApply, getApplicationStatus, setPassword
+ *     （mock apiClient 验证后端 API 调用参数和返回值）
+ *   - 管理员函数：listApplications, approveApplication, rejectApplication
+ *     （mock apiClient 验证调用参数和返回值）
  *
  * Mock 策略：mock @/api/client 的 apiClient
  */
@@ -46,6 +48,9 @@ import {
   submitRegisterApply,
   getApplicationStatus,
   setPassword,
+  listApplications,
+  approveApplication,
+  rejectApplication,
 } from "../auth";
 
 describe("auth API - 真实接口", () => {
@@ -119,118 +124,149 @@ describe("auth API - 真实接口", () => {
   });
 });
 
-describe("auth API - Mock 注册申请流程", () => {
+describe("auth API - 注册申请流程（真实后端接口）", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.useFakeTimers();
-    localStorage.clear();
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("submitRegisterApply - 存储到 localStorage 并返回 pending 状态", async () => {
-    const promise = submitRegisterApply({
+  it("submitRegisterApply - 调用 POST /auth/register/apply", async () => {
+    const mockResponse = {
+      application_id: 42,
+      status: "pending" as const,
+      message: "注册申请已提交，请等待管理员审核",
+    };
+    mockApiClient.post.mockResolvedValueOnce(mockResponse);
+    const result = await submitRegisterApply({
       email: "test@example.com",
       username: "testuser",
     });
-    // 推进 mockDelay 的 setTimeout
-    vi.advanceTimersByTime(800);
-    const result = await promise;
-
-    expect(result.status).toBe("pending");
-    expect(result.application_id).toBeTypeOf("number");
-    expect(result.message).toContain("注册申请已提交");
-
-    // 验证 localStorage 存储
-    const stored = localStorage.getItem("kb_mock_application");
-    expect(stored).not.toBeNull();
-    const parsed = JSON.parse(stored!);
-    expect(parsed.email).toBe("test@example.com");
-    expect(parsed.username).toBe("testuser");
-    expect(parsed.status).toBe("pending");
-  });
-
-  it("getApplicationStatus - 存在申请记录时返回状态", async () => {
-    // 先提交申请
-    const submitPromise = submitRegisterApply({
+    expect(mockApiClient.post).toHaveBeenCalledWith("/auth/register/apply", {
       email: "test@example.com",
       username: "testuser",
     });
-    vi.advanceTimersByTime(800);
-    await submitPromise;
-
-    // 查询状态
-    const statusPromise = getApplicationStatus("test@example.com");
-    vi.advanceTimersByTime(500);
-    const result = await statusPromise;
-
+    expect(result).toEqual(mockResponse);
+    expect(result.application_id).toBe(42);
     expect(result.status).toBe("pending");
-    expect(result.email).toBe("test@example.com");
-    expect(result.username).toBe("testuser");
-    expect(result.submitted_at).toBeTypeOf("string");
+  });
+
+  it("getApplicationStatus - 调用 GET /auth/register/status?email=xxx", async () => {
+    const mockResponse = {
+      status: "pending" as const,
+      email: "test@example.com",
+      username: "testuser",
+      submitted_at: "2026-07-10T10:00:00Z",
+      reviewed_at: null,
+      reject_reason: null,
+    };
+    mockApiClient.get.mockResolvedValueOnce(mockResponse);
+    const result = await getApplicationStatus("test@example.com");
+    // 邮箱应被 URL 编码
+    expect(mockApiClient.get).toHaveBeenCalledWith(
+      "/auth/register/status?email=test%40example.com",
+    );
+    expect(result).toEqual(mockResponse);
+    expect(result.status).toBe("pending");
     expect(result.reviewed_at).toBeNull();
-    expect(result.reject_reason).toBeNull();
   });
 
-  it("getApplicationStatus - 无申请记录时抛出错误", async () => {
-    const statusPromise = getApplicationStatus("unknown@example.com");
-    vi.advanceTimersByTime(500);
-    await expect(statusPromise).rejects.toThrow("未找到申请记录");
+  it("getApplicationStatus - 特殊字符邮箱正确编码", async () => {
+    const mockResponse = {
+      status: "approved" as const,
+      email: "user+tag@example.com",
+      username: "usertag",
+      submitted_at: "2026-07-10T10:00:00Z",
+      reviewed_at: "2026-07-10T12:00:00Z",
+      reject_reason: null,
+    };
+    mockApiClient.get.mockResolvedValueOnce(mockResponse);
+    await getApplicationStatus("user+tag@example.com");
+    // + 号应被编码为 %2B
+    expect(mockApiClient.get).toHaveBeenCalledWith(
+      "/auth/register/status?email=user%2Btag%40example.com",
+    );
   });
 
-  it("getApplicationStatus - 邮箱不匹配时抛出错误", async () => {
-    // 先提交申请
-    const submitPromise = submitRegisterApply({
-      email: "test@example.com",
-      username: "testuser",
-    });
-    vi.advanceTimersByTime(800);
-    await submitPromise;
-
-    // 用不同邮箱查询
-    const statusPromise = getApplicationStatus("other@example.com");
-    vi.advanceTimersByTime(500);
-    await expect(statusPromise).rejects.toThrow("未找到申请记录");
-  });
-
-  it("setPassword - 合法 token 设置成功", async () => {
-    // 先提交申请以便 localStorage 有记录
-    const submitPromise = submitRegisterApply({
-      email: "test@example.com",
-      username: "testuser",
-    });
-    vi.advanceTimersByTime(800);
-    await submitPromise;
-
-    // 验证 localStorage 有记录
-    expect(localStorage.getItem("kb_mock_application")).not.toBeNull();
-
-    // 设置密码
-    const passwordPromise = setPassword({
+  it("setPassword - 调用 POST /auth/set-password", async () => {
+    const mockResponse = {
+      success: true,
+      message: "密码设置成功，您现在可以登录了",
+    };
+    mockApiClient.post.mockResolvedValueOnce(mockResponse);
+    const result = await setPassword({
       token: "valid-token-12345",
       password: "newpass123",
     });
-    vi.advanceTimersByTime(800);
-    const result = await passwordPromise;
-
+    expect(mockApiClient.post).toHaveBeenCalledWith("/auth/set-password", {
+      token: "valid-token-12345",
+      password: "newpass123",
+    });
+    expect(result).toEqual(mockResponse);
     expect(result.success).toBe(true);
-    expect(result.message).toContain("密码设置成功");
+  });
+});
 
-    // 验证 localStorage 记录已清除
-    expect(localStorage.getItem("kb_mock_application")).toBeNull();
+describe("auth API - 管理员函数", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it("setPassword - token 为空时抛出错误", async () => {
-    const passwordPromise = setPassword({ token: "", password: "newpass123" });
-    vi.advanceTimersByTime(800);
-    await expect(passwordPromise).rejects.toThrow("无效的设置链接");
+  it("listApplications - 无参数时调用 GET /auth/register/applications", async () => {
+    const mockResponse = {
+      items: [],
+      total: 0,
+      pending_count: 0,
+    };
+    mockApiClient.get.mockResolvedValueOnce(mockResponse);
+    const result = await listApplications();
+    expect(mockApiClient.get).toHaveBeenCalledWith("/auth/register/applications");
+    expect(result).toEqual(mockResponse);
   });
 
-  it("setPassword - token 过短时抛出错误", async () => {
-    const passwordPromise = setPassword({ token: "short", password: "newpass123" });
-    vi.advanceTimersByTime(800);
-    await expect(passwordPromise).rejects.toThrow("无效的设置链接");
+  it("listApplications - 带状态和分页参数时正确拼接查询字符串", async () => {
+    const mockResponse = {
+      items: [
+        {
+          id: 1,
+          email: "a@example.com",
+          username: "userA",
+          status: "pending" as const,
+          submitted_at: "2026-07-10T10:00:00Z",
+          reviewed_at: null,
+          reviewed_by: null,
+          reject_reason: null,
+        },
+      ],
+      total: 1,
+      pending_count: 1,
+    };
+    mockApiClient.get.mockResolvedValueOnce(mockResponse);
+    const result = await listApplications({ status: "pending", page: 1, page_size: 20 });
+    // 验证查询参数拼接
+    expect(mockApiClient.get).toHaveBeenCalledWith(
+      "/auth/register/applications?status=pending&page=1&page_size=20",
+    );
+    expect(result.total).toBe(1);
+    expect(result.items[0].email).toBe("a@example.com");
+  });
+
+  it("approveApplication - 调用 POST /auth/register/approve", async () => {
+    const mockResponse = { message: "已批准申请，密码设置邮件已发送" };
+    mockApiClient.post.mockResolvedValueOnce(mockResponse);
+    const result = await approveApplication(42);
+    expect(mockApiClient.post).toHaveBeenCalledWith("/auth/register/approve", {
+      application_id: 42,
+    });
+    expect(result).toEqual(mockResponse);
+  });
+
+  it("rejectApplication - 调用 POST /auth/register/reject", async () => {
+    const mockResponse = { message: "已拒绝申请，通知邮件已发送" };
+    mockApiClient.post.mockResolvedValueOnce(mockResponse);
+    const result = await rejectApplication(42, "信息不完整");
+    expect(mockApiClient.post).toHaveBeenCalledWith("/auth/register/reject", {
+      application_id: 42,
+      reject_reason: "信息不完整",
+    });
+    expect(result).toEqual(mockResponse);
   });
 });

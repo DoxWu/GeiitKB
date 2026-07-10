@@ -99,3 +99,55 @@ export interface SetPasswordRequest {
   /** 新密码 */
   password: string;
 }
+
+/** 设置密码响应 */
+export interface SetPasswordResponse {
+  /** 是否成功 */
+  success: boolean;
+  /** 提示消息 */
+  message: string;
+}
+
+/** 申请列表项（管理员查看） */
+export interface ApplicationListItem {
+  /** 申请 ID */
+  id: number;
+  /** 申请人邮箱 */
+  email: string;
+  /** 申请用户名 */
+  username: string;
+  /** 申请状态 */
+  status: ApplicationStatus;
+  /** 提交时间（ISO 8601 字符串） */
+  submitted_at: string;
+  /** 审批时间（ISO 8601 字符串或 null） */
+  reviewed_at: string | null;
+  /** 审批管理员 ID */
+  reviewed_by: number | null;
+  /** 拒绝原因 */
+  reject_reason: string | null;
+}
+
+/** 申请列表响应（管理员查看） */
+export interface ApplicationListResponse {
+  /** 申请列表 */
+  items: ApplicationListItem[];
+  /** 申请总数 */
+  total: number;
+  /** 待审批数量 */
+  pending_count: number;
+}
+
+/** 批准申请请求 */
+export interface ApproveRequest {
+  /** 申请 ID */
+  application_id: number;
+}
+
+/** 拒绝申请请求 */
+export interface RejectRequest {
+  /** 申请 ID */
+  application_id: number;
+  /** 拒绝原因（必填） */
+  reject_reason: string;
+}

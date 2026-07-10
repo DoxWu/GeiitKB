@@ -26,6 +26,7 @@ import logging
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.api.routes.auth import router as auth_router
+from app.api.routes.registration import router as registration_router
 from app.api.routes.documents import router as documents_router
 from app.api.routes.chat import router as chat_router
 from app.api.routes.stats import router as stats_router
@@ -300,6 +301,7 @@ app.add_middleware(PrometheusMiddleware)
     所有路由都会加上 API_V1_PREFIX 前缀（/api/v1）。
 """
 app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
+app.include_router(registration_router, prefix=settings.API_V1_PREFIX)
 app.include_router(documents_router, prefix=settings.API_V1_PREFIX)
 app.include_router(chat_router, prefix=settings.API_V1_PREFIX)
 app.include_router(stats_router, prefix=settings.API_V1_PREFIX)

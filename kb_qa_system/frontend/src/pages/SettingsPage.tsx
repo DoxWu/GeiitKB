@@ -66,6 +66,11 @@ export default function SettingsPage() {
     navigate("/chat");
   };
 
+  /** 跳转到注册申请管理页（仅管理员） */
+  const handleGoAdminApplications = () => {
+    navigate("/admin/applications");
+  };
+
   /** 登出 */
   const handleLogout = async () => {
     await logout();
@@ -152,6 +157,20 @@ export default function SettingsPage() {
                 <p className="text-xs text-ink-tertiary">向知识库提问</p>
               </div>
             </button>
+            {user.is_superuser && (
+              <button
+                onClick={handleGoAdminApplications}
+                className="flex items-center gap-3 rounded-md border border-line p-3 text-left transition-colors hover:bg-muted"
+              >
+                <div className="inline-flex h-9 w-9 items-center justify-center rounded bg-brand-light text-brand">
+                  <Shield className="h-4 w-4" />
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-ink">注册申请管理</p>
+                  <p className="text-xs text-ink-tertiary">审批用户注册申请</p>
+                </div>
+              </button>
+            )}
           </div>
         </section>
 

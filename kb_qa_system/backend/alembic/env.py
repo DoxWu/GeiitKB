@@ -27,7 +27,8 @@ from app.core.database import Base
 
 # 导入所有模型，确保 Alembic 能发现它们
 from app.models import (
-    User, Document, DocumentChunk, Conversation, Message, QAEvent
+    User, Document, DocumentChunk, Conversation, Message, QAEvent,
+    RegistrationApplication, EmailLog,
 )
 
 # Alembic 配置

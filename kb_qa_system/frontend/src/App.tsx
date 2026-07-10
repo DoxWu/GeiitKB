@@ -20,12 +20,14 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-d
 import { ToastContainer, ErrorBoundary } from "@/components/common";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { PublicRoute } from "@/components/auth/PublicRoute";
+import { AdminRoute } from "@/components/auth/AdminRoute";
 import LoginPage from "@/pages/LoginPage";
 import RegisterApplyPage from "@/pages/RegisterApplyPage";
 import SetPasswordPage from "@/pages/SetPasswordPage";
 import DocumentsPage from "@/pages/DocumentsPage";
 import ChatPage from "@/pages/ChatPage";
 import SettingsPage from "@/pages/SettingsPage";
+import AdminApplicationsPage from "@/pages/AdminApplicationsPage";
 import PrivacyPage from "@/pages/PrivacyPage";
 import TermsPage from "@/pages/TermsPage";
 import NotFoundPage from "@/pages/NotFoundPage";
@@ -115,6 +117,16 @@ export default function App() {
               <ProtectedRoute>
                 <ChatPage />
               </ProtectedRoute>
+            }
+          />
+
+          {/* 管理员页面（注册申请管理） */}
+          <Route
+            path="/admin/applications"
+            element={
+              <AdminRoute>
+                <AdminApplicationsPage />
+              </AdminRoute>
             }
           />
 

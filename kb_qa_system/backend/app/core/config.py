@@ -138,6 +138,46 @@ class Settings(BaseSettings):
     ]
 
     # ============================================
+    # 邮件 SMTP 配置（Resend）
+    # ============================================
+
+    # 是否启用邮件发送（开发环境关闭，仅记录日志；生产环境必须开启）
+    EMAIL_ENABLED: bool = False
+
+    # SMTP 服务器地址（Resend: smtp.resend.com）
+    SMTP_HOST: str = "smtp.resend.com"
+
+    # SMTP 端口（465=SSL 隐式 TLS，587=STARTTLS）
+    SMTP_PORT: int = 465
+
+    # SMTP 用户名（Resend 固定为 resend）
+    SMTP_USER: str = "resend"
+
+    # SMTP 密码（Resend API Key，格式 re_xxxxxxxxxxxx）
+    SMTP_PASSWORD: str = ""
+
+    # 是否使用 SSL/TLS（端口 465 用 True）
+    SMTP_USE_TLS: bool = True
+
+    # 是否使用 STARTTLS（端口 587 用 True，与 USE_TLS 互斥）
+    SMTP_START_TLS: bool = False
+
+    # SMTP 连接超时（秒）
+    SMTP_TIMEOUT: int = 30
+
+    # 发件人地址（Resend 默认域：onboarding@resend.dev，生产环境改为已验证域名）
+    EMAIL_FROM: str = "GeiIt企业知识库 <onboarding@resend.dev>"
+
+    # 管理员通知邮箱（接收注册申请通知）
+    ADMIN_NOTIFY_EMAIL: str = ""
+
+    # 前端基础 URL（用于拼接邮件中的密码设置链接）
+    FRONTEND_BASE_URL: str = "http://localhost:5173"
+
+    # 密码设置 Token 有效期（小时）
+    PASSWORD_TOKEN_EXPIRE_HOURS: int = 24
+
+    # ============================================
     # LLM 大模型配置
     # ============================================
 
@@ -665,8 +705,17 @@ class Settings(BaseSettings):
                 errors.append("生产环境启用 Prometheus 时必须开启 PROMETHEUS_AUTH_ENABLED")
 
             # /metrics 端点密码不能为空
-            if self.ENABLE_PROMETHEUS and self.PROMETHEUS_AUTH_ENABLED and not self.PROMETHEUS_AUTH_PASSWORD:
+            if self.ENABLE_PROMETHEUS and self.ENABLE_PROMETHEUS_AUTH_ENABLED and not self.PROMETHEUS_AUTH_PASSWORD:
                 errors.append("生产环境 PROMETHEUS_AUTH_PASSWORD 不能为空")
+
+            # 邮件配置校验（启用邮件时必须配置 SMTP 密码和管理员邮箱）
+            if self.EMAIL_ENABLED:
+                if not self.SMTP_PASSWORD:
+                    errors.append("生产环境启用邮件时必须设置 SMTP_PASSWORD（Resend API Key）")
+                if not self.ADMIN_NOTIFY_EMAIL:
+                    errors.append("生产环境启用邮件时必须设置 ADMIN_NOTIFY_EMAIL")
+                if "@" not in self.EMAIL_FROM:
+                    errors.append("EMAIL_FROM 格式不合法，必须包含邮箱地址")
         return errors
 
 

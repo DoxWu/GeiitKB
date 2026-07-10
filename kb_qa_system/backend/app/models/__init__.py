@@ -9,6 +9,8 @@ from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.models.conversation import Conversation, Message
 from app.models.qa_event import QAEvent
+from app.models.registration import RegistrationApplication
+from app.models.email_log import EmailLog
 
 __all__ = [
     "User",
@@ -17,4 +19,6 @@ __all__ = [
     "Conversation",
     "Message",
     "QAEvent",
+    "RegistrationApplication",
+    "EmailLog",
 ]

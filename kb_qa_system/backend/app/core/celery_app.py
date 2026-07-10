@@ -45,7 +45,10 @@ celery_app = Celery(
     "kb_qa_system",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
-    include=["app.tasks.document_tasks"],  # 自动发现的任务模块
+    include=[
+        "app.tasks.document_tasks",  # 文档处理任务
+        "app.tasks.email_tasks",     # 邮件发送任务
+    ],  # 自动发现的任务模块
 )
 
 # ============================================
@@ -100,6 +103,7 @@ celery_app.conf.update(
         Queue("default", routing_key="default.#"),
         Queue("document", routing_key="document.#"),  # 文档处理队列
         Queue("embedding", routing_key="embedding.#"),  # 向量化队列
+        Queue("email", routing_key="email.#"),  # 邮件发送队列
     ),
     task_routes={
         "app.tasks.document_tasks.process_document": {
@@ -109,6 +113,10 @@ celery_app.conf.update(
         "app.tasks.document_tasks.reprocess_document": {
             "queue": "document",
             "routing_key": "document.reprocess",
+        },
+        "app.tasks.email_tasks.send_email": {
+            "queue": "email",
+            "routing_key": "email.send",
         },
     },
 

@@ -29,10 +29,12 @@ export const API_PATHS = {
   ME: "/auth/me",
   ACCOUNT_DELETE: "/auth/account",
   EXPORT_DATA: "/auth/export-data",
-  // 注册审批流程（需后端新增）
+  // 注册审批流程
   REGISTER_APPLY: "/auth/register/apply",
   REGISTER_STATUS: "/auth/register/status",
+  REGISTER_APPLICATIONS: "/auth/register/applications",
   REGISTER_APPROVE: "/auth/register/approve",
+  REGISTER_REJECT: "/auth/register/reject",
   SET_PASSWORD: "/auth/set-password",
   // 文档相关
   DOCUMENTS: "/documents",

@@ -19,6 +19,8 @@ import type {
   RegisterApplyResponse,
   ApplicationStatusResponse,
   SetPasswordRequest,
+  SetPasswordResponse,
+  ApplicationListResponse,
 } from "@/types/user";
 
 /**
@@ -116,51 +118,29 @@ export async function exportUserData(): Promise<string> {
 }
 
 // ============================================
-// 以下接口需后端新增，当前使用 Mock 实现
+// 注册审批流程接口（后端已实现）
 // ============================================
-
-/** Mock 延迟（模拟网络请求） */
-function mockDelay(ms = 800): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Mock 申请状态存储（localStorage） */
-const MOCK_APPLICATION_KEY = "kb_mock_application";
 
 /**
  * 提交注册申请
  *
- * Mock 实现：将申请信息存入 localStorage，返回 pending 状态。
- * 后端就绪后切换为真实接口调用。
+ * 调用 POST /auth/register/apply，创建 pending 状态的申请记录，
+ * 并触发管理员通知邮件。
  *
  * @param data - 注册申请请求（email + username）
- * @returns 申请响应
+ * @returns 申请响应（application_id + status + message）
  */
 export async function submitRegisterApply(
   data: RegisterApplyRequest,
 ): Promise<RegisterApplyResponse> {
-  await mockDelay();
-  // 存储到 localStorage 模拟后端记录
-  const application = {
-    application_id: Date.now(),
-    status: "pending" as const,
-    email: data.email,
-    username: data.username,
-    submitted_at: new Date().toISOString(),
-  };
-  localStorage.setItem(MOCK_APPLICATION_KEY, JSON.stringify(application));
-
-  return {
-    application_id: application.application_id,
-    status: "pending",
-    message: "注册申请已提交，请等待管理员审核。审核通过后，您将收到密码设置邮件。",
-  };
+  return apiClient.post<RegisterApplyResponse>(API_PATHS.REGISTER_APPLY, data);
 }
 
 /**
  * 查询注册申请状态
  *
- * Mock 实现：从 localStorage 读取申请状态。
+ * 调用 GET /auth/register/status?email=xxx，按邮箱查询最新申请状态。
+ * 响应不含 Token 字段（安全要求）。
  *
  * @param email - 申请人邮箱
  * @returns 申请状态响应
@@ -168,45 +148,85 @@ export async function submitRegisterApply(
 export async function getApplicationStatus(
   email: string,
 ): Promise<ApplicationStatusResponse> {
-  await mockDelay(500);
-  const raw = localStorage.getItem(MOCK_APPLICATION_KEY);
-  if (!raw) {
-    throw new Error("未找到申请记录");
-  }
-  const app = JSON.parse(raw);
-  if (app.email !== email) {
-    throw new Error("未找到申请记录");
-  }
-  return {
-    status: app.status,
-    email: app.email,
-    username: app.username,
-    submitted_at: app.submitted_at,
-    reviewed_at: app.reviewed_at || null,
-    reject_reason: app.reject_reason || null,
-  };
+  return apiClient.get<ApplicationStatusResponse>(
+    `${API_PATHS.REGISTER_STATUS}?email=${encodeURIComponent(email)}`,
+  );
 }
 
 /**
  * 通过 Token 设置密码
  *
- * Mock 实现：模拟设置成功，清除申请记录。
+ * 调用 POST /auth/set-password，用邮件链接中的 Token 设置密码并创建账号。
+ * Token 一次性使用，24 小时过期。
  *
  * @param data - 设置密码请求（token + password）
  * @returns 设置结果
  */
 export async function setPassword(
   data: SetPasswordRequest,
-): Promise<{ success: boolean; message: string }> {
-  await mockDelay();
-  // Mock：验证 token 格式
-  if (!data.token || data.token.length < 10) {
-    throw new Error("无效的设置链接");
-  }
-  // 清除申请记录
-  localStorage.removeItem(MOCK_APPLICATION_KEY);
-  return {
-    success: true,
-    message: "密码设置成功，您现在可以使用邮箱登录了。",
-  };
+): Promise<SetPasswordResponse> {
+  return apiClient.post<SetPasswordResponse>(API_PATHS.SET_PASSWORD, data);
+}
+
+/**
+ * 管理员查看注册申请列表
+ *
+ * 调用 GET /auth/register/applications，分页查询申请列表，支持状态筛选。
+ * 需要管理员权限。
+ *
+ * @param params - 查询参数（status, page, page_size）
+ * @returns 申请列表响应
+ */
+export async function listApplications(params?: {
+  status?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<ApplicationListResponse> {
+  const query = new URLSearchParams();
+  if (params?.status) query.set("status", params.status);
+  if (params?.page) query.set("page", String(params.page));
+  if (params?.page_size) query.set("page_size", String(params.page_size));
+  const qs = query.toString();
+  return apiClient.get<ApplicationListResponse>(
+    `${API_PATHS.REGISTER_APPLICATIONS}${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/**
+ * 管理员批准注册申请
+ *
+ * 调用 POST /auth/register/approve，批准 pending 状态的申请，
+ * 生成密码设置 Token 并发送密码设置邮件给申请人。
+ * 需要管理员权限。
+ *
+ * @param applicationId - 申请 ID
+ * @returns 操作结果消息
+ */
+export async function approveApplication(
+  applicationId: number,
+): Promise<{ message: string }> {
+  return apiClient.post<{ message: string }>(API_PATHS.REGISTER_APPROVE, {
+    application_id: applicationId,
+  });
+}
+
+/**
+ * 管理员拒绝注册申请
+ *
+ * 调用 POST /auth/register/reject，拒绝 pending 状态的申请，
+ * 发送拒绝通知邮件（含拒绝原因）给申请人。
+ * 需要管理员权限。
+ *
+ * @param applicationId - 申请 ID
+ * @param rejectReason - 拒绝原因（必填，1-500 字符）
+ * @returns 操作结果消息
+ */
+export async function rejectApplication(
+  applicationId: number,
+  rejectReason: string,
+): Promise<{ message: string }> {
+  return apiClient.post<{ message: string }>(API_PATHS.REGISTER_REJECT, {
+    application_id: applicationId,
+    reject_reason: rejectReason,
+  });
 }

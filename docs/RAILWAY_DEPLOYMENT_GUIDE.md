@@ -263,6 +263,92 @@ Redis 用于：缓存、限流、Token 黑名单、Celery 任务队列。
 
 > ✅ **数据库迁移验证**：查看部署日志，确认出现 `✅ 数据库迁移完成` 消息。这表示 Alembic 已成功创建所有表和索引（包括 pgvector 的 IVFFlat 索引）。
 
+#### 4.5 创建超级管理员账号
+
+系统没有默认的管理员账号，部署后需要手动创建第一个超级管理员。超级管理员拥有以下权限：
+- 访问所有用户文档（包括公共库和私人库）
+- 管理公共文档（删除/重新处理）
+- 访问 QA 质量统计看板（`/stats/overview`）
+
+**方式 1：通过 Railway Shell 执行（推荐）**
+
+1. 在 Railway Dashboard 中，进入后端 API 服务
+2. 点击 **Settings** → 找到 **Service Shell** 或 **Web Terminal**
+3. 在 Shell 中执行以下命令：
+
+```bash
+# 使用命令行参数（替换为你实际的管理员信息）
+python -m scripts.create_superuser \
+  --username admin \
+  --email admin@yourcompany.com \
+  --password "YourSecure123"
+```
+
+4. 看到以下输出表示创建成功：
+   ```
+   ✅ 超级管理员创建成功！
+      用户名: admin
+      邮箱: admin@yourcompany.com
+      ID: 1
+      状态: 活跃
+      角色: 超级管理员
+   ```
+
+**方式 2：通过环境变量执行（适合自动化）**
+
+1. 在后端 API 服务的 **Variables** 标签页，临时添加以下变量：
+
+| 变量名 | 值 | 说明 |
+|--------|-----|------|
+| `SUPERUSER_USERNAME` | `admin` | 管理员用户名 |
+| `SUPERUSER_EMAIL` | `admin@yourcompany.com` | 管理员邮箱 |
+| `SUPERUSER_PASSWORD` | `YourSecure123` | 管理员密码（≥8 字符，含字母和数字） |
+
+2. 进入 **Settings → Command**，临时修改启动命令为：
+   ```
+   python -m scripts.create_superuser && /app/entrypoint.sh
+   ```
+3. 触发重新部署
+4. 查看日志确认 `✅ 超级管理员创建成功`
+5. **立即恢复**启动命令为 `/app/entrypoint.sh`，并**删除**三个临时环境变量
+6. 重新部署
+
+> ⚠️ **安全提示**：创建完成后务必删除 `SUPERUSER_PASSWORD` 环境变量，避免密码长期暴露在配置中。
+
+**方式 3：将普通用户升级为管理员**
+
+如果你已经通过前端注册了账号，可以将该账号升级为超级管理员：
+
+```bash
+# 在 Railway Shell 中执行（替换 username 为已注册的用户名）
+python -m scripts.create_superuser \
+  --username your_username \
+  --email your_email@example.com \
+  --password "YourCurrentPassword123" \
+  --upgrade-only
+```
+
+> 💡 `--upgrade-only` 参数：仅升级已有用户为管理员，不创建新用户，不修改密码（密码参数仅用于通过校验，不会被修改）。
+
+**方式 4：通过 PostgreSQL SQL 直接操作**
+
+如果以上方式不可用，可以直接在 Railway PostgreSQL Query 中执行 SQL：
+
+```sql
+-- 查看当前用户
+SELECT id, username, email, is_superuser FROM users;
+
+-- 将指定用户升级为超级管理员
+UPDATE users SET is_superuser = true WHERE username = 'your_username';
+
+-- 验证
+SELECT id, username, email, is_superuser FROM users WHERE username = 'your_username';
+```
+
+> ⚠️ **注意**：不推荐直接用 SQL 创建新用户，因为密码需要 bcrypt 哈希。升级已有用户用 SQL 是安全的。
+
+**验证超级管理员**：用管理员账号登录前端，用户名旁会显示"管理员"标签。
+
 ---
 
 ### 第 5 步：部署 Celery Worker 服务
@@ -649,6 +735,7 @@ alembic history
 - [ ] PostgreSQL 服务已创建，pgvector 扩展已启用（`CREATE EXTENSION vector;`）
 - [ ] Redis 服务已创建，持久化已启用
 - [ ] 后端 API 服务已部署，`/health` 返回 healthy
+- [ ] **超级管理员账号已创建**（`python -m scripts.create_superuser`）
 - [ ] Celery Worker 服务已部署，日志显示 ready
 - [ ] 前端服务已部署，可正常访问
 
@@ -665,6 +752,7 @@ alembic history
 ### 功能验证
 - [ ] 注册新账号成功
 - [ ] 登录获取 Token 成功
+- [ ] **管理员账号登录成功**，用户名旁显示"管理员"标签
 - [ ] 上传文档后状态变为 completed
 - [ ] 问答功能正常（能收到 LLM 回答）
 - [ ] 数据导出功能正常（下载 JSON 文件）
@@ -759,6 +847,40 @@ alembic history
 2. Railway Redis 的连接地址格式为 `redis://default:password@host:port`
 3. 确认 Redis 服务未暂停（Railway 免费版可能自动暂停空闲服务）
 4. 检查 `CELERY_BROKER_URL` 和 `CELERY_RESULT_BACKEND` 是否也正确引用了 Redis
+
+### Q9：如何创建超级管理员账号
+
+**症状**：系统没有默认管理员，需要手动创建
+
+**解决方案**：
+
+```bash
+# 在 Railway 后端服务的 Shell 中执行
+python -m scripts.create_superuser \
+  --username admin \
+  --email admin@yourcompany.com \
+  --password "YourSecure123"
+```
+
+详细操作步骤见 [第 4.5 步：创建超级管理员账号](#45-创建超级管理员账号)。
+
+### Q10：如何将已有用户升级为管理员
+
+**症状**：已通过前端注册了账号，需要将其提升为管理员
+
+**解决方案**：
+
+```bash
+# 方式 1：使用脚本（推荐）
+python -m scripts.create_superuser \
+  --username your_username \
+  --email your_email@example.com \
+  --password "anypassword1" \
+  --upgrade-only
+
+# 方式 2：直接 SQL（在 Railway PostgreSQL Query 中）
+UPDATE users SET is_superuser = true WHERE username = 'your_username';
+```
 
 ---
 

@@ -14,10 +14,18 @@ from app.schemas.chat import (
     QuestionRequest, AnswerResponse, ConversationResponse,
     ConversationListResponse, MessageResponse
 )
+from app.schemas.registration import (
+    RegisterApplyRequest, RegisterApplyResponse, ApplicationStatusResponse,
+    ApplicationListItem, ApplicationListResponse, ApproveRequest, RejectRequest,
+    SetPasswordRequest, SetPasswordResponse,
+)
 
 __all__ = [
     "UserCreate", "UserLogin", "UserResponse", "TokenResponse", "TokenData",
     "DocumentUpload", "DocumentResponse", "DocumentListResponse",
     "QuestionRequest", "AnswerResponse", "ConversationResponse",
     "ConversationListResponse", "MessageResponse",
+    "RegisterApplyRequest", "RegisterApplyResponse", "ApplicationStatusResponse",
+    "ApplicationListItem", "ApplicationListResponse", "ApproveRequest", "RejectRequest",
+    "SetPasswordRequest", "SetPasswordResponse",
 ]
