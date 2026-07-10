@@ -1,0 +1,164 @@
+# ============================================
+# Prometheus 告警规则
+# ============================================
+# 作用：
+#     定义 RAG 系统的关键告警规则，当指标超过阈值时触发告警。
+#     告警由 Prometheus 评估，通过 Alertmanager 发送通知（需额外配置）。
+#
+# 告警级别：
+#     - critical: 需立即处理（服务不可用、错误率极高）
+#     - warning:  需关注（性能下降、资源紧张）
+# ============================================
+
+groups:
+  # ============================================
+  # HTTP 服务健康告警
+  # ============================================
+  - name: http_health
+    rules:
+      # HTTP 5xx 错误率过高
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+          > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP 5xx 错误率过高"
+          description: "过去 5 分钟内 5xx 错误率超过 10%（当前: {{ $value | humanizePercentage }}）"
+
+      # 服务不可用（无请求处理）
+      - alert: ServiceDown
+        expr: up{job="kb_qa_api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API 服务不可用"
+          description: "Prometheus 无法抓取 {{ $labels.instance }} 的指标，服务可能已宕机"
+
+  # ============================================
+  # RAG 链路性能告警
+  # ============================================
+  - name: rag_performance
+    rules:
+      # RAG 总处理耗时过高（P99 > 30s）
+      - alert: HighRAGLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(rag_total_duration_seconds_bucket[5m])) by (le)
+          ) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAG 处理耗时过高"
+          description: "RAG P99 延迟超过 30 秒（当前: {{ $value }}s），用户体验受损"
+
+      # 检索耗时过高（P95 > 5s）
+      - alert: HighRetrievalLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(rag_retrieval_duration_seconds_bucket[5m])) by (le)
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "检索耗时过高"
+          description: "检索 P95 延迟超过 5 秒（当前: {{ $value }}s），可能需要优化向量索引或 reranker"
+
+      # LLM 生成耗时过高（P95 > 20s）
+      - alert: HighLLMLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(rag_llm_duration_seconds_bucket[5m])) by (le)
+          ) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM 生成耗时过高"
+          description: "LLM P95 延迟超过 20 秒（当前: {{ $value }}s），可能需要检查 LLM 服务状态"
+
+  # ============================================
+  # 服务质量告警
+  # ============================================
+  - name: rag_quality
+    rules:
+      # 降级率过高（>30%）
+      - alert: HighDegradationRate
+        expr: |
+          sum(rate(rag_degradation_total[5m]))
+          /
+          sum(rate(rag_questions_total[5m]))
+          > 0.3
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "服务降级率过高"
+          description: "过去 5 分钟内降级率超过 30%（当前: {{ $value | humanizePercentage }}），LLM 服务可能不稳定"
+
+      # LLM 熔断频繁触发
+      - alert: CircuitBreakerTripping
+        expr: rate(rag_degradation_total{reason="circuit_open"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LLM 熔断器频繁触发"
+          description: "过去 5 分钟内熔断触发频率过高，LLM 上游服务可能严重不可用"
+
+      # 预生成校验拦截率过高（>50%）
+      - alert: HighValidationSkipRate
+        expr: |
+          sum(rate(rag_validation_skipped_total[10m]))
+          /
+          sum(rate(rag_questions_total{intent_type="kb_query"}[10m]))
+          > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "预生成校验拦截率过高"
+          description: "过去 10 分钟内超过 50% 的知识库提问被校验拦截，知识库内容可能不足或不匹配"
+
+      # 检索质量持续偏低（平均 top score < 0.5）
+      - alert: LowRetrievalQuality
+        expr: |
+          avg(rag_retrieval_top_score_sum / rag_retrieval_top_score_count) < 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "检索质量持续偏低"
+          description: "过去 10 分钟内检索平均最高分低于 0.5，知识库内容与用户问题匹配度不足"
+
+  # ============================================
+  # 资源消耗告警
+  # ============================================
+  - name: resource_usage
+    rules:
+      # LLM Token 消耗异常增长
+      - alert: HighTokenUsage
+        expr: rate(rag_llm_tokens_total[1h]) > 100000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM Token 消耗异常"
+          description: "过去 1 小时内 Token 消耗速率超过 100K/min，可能存在滥用或成本超支风险"
+
+      # 在途请求数过高
+      - alert: HighConcurrentRequests
+        expr: http_requests_in_progress > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "并发请求数过高"
+          description: "当前在途 HTTP 请求数超过 100（当前: {{ $value }}），服务可能过载"

@@ -1,0 +1,179 @@
+# ============================================
+# GeiIt企业知识库 - 项目根 .gitignore
+# ============================================
+# 作用：
+#   统一排除前端、后端、Python、Node、OS、IDE 等不应上传至 GitHub 的文件。
+#   子目录（如 frontend/）的 .gitignore 作为补充规则保留。
+# ============================================
+
+# ============================================
+# 环境变量文件（含密钥，禁止上传）
+# ============================================
+# 排除所有 .env 变体，但保留 .env.example 供参考
+.env
+.env.local
+.env.production
+.env.staging
+.env.development
+.env.*.local
+# 显式保留示例文件
+!.env.example
+
+# ============================================
+# Python（后端）
+# ============================================
+# 字节码 / 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+# 分发 / 打包
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+# 测试 / 类型检查 / lint 缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+# Jupyter Notebook 检查点
+.ipynb_checkpoints/
+
+# ============================================
+# Node.js（前端）
+# ============================================
+node_modules/
+dist/
+dist-ssr/
+*.local
+# 测试覆盖率
+coverage/
+# npm/pnpm/yarn 日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+# 包管理锁文件（按需保留，此处不排除 package-lock.json / pnpm-lock.yaml）
+# 依赖目录缓存
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/install-state.gz
+.pnp.*
+
+# ============================================
+# 日志文件
+# ============================================
+logs/
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# ============================================
+# 运行时数据 / 上传文件（后端）
+# ============================================
+# 用户上传的文档（运行时生成，不应入库）
+kb_qa_system/backend/uploads/
+uploads/
+# 数据目录（SQLite、向量索引等运行时数据）
+kb_qa_system/backend/data/
+data/
+# 临时文件
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# ============================================
+# 数据库文件
+# ============================================
+*.sqlite
+*.sqlite3
+*.db
+
+# ============================================
+# IDE / 编辑器
+# ============================================
+# VS Code（保留 extensions.json 以便团队共享推荐插件）
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+# JetBrains（IntelliJ / PyCharm / WebStorm）
+.idea/
+*.iml
+*.iws
+*.ipr
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+# 其他编辑器
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ============================================
+# 操作系统文件
+# ============================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+# Linux
+*~
+.directory
+
+# ============================================
+# Railway / 部署相关
+# ============================================
+# Railway 本地配置
+.railway/
+# Docker 卷数据
+.docker/
+# Kubernetes
+*.kubeconfig
+
+# ============================================
+# 敏感信息 / 密钥
+# ============================================
+*.pem
+*.key
+*.crt
+*.p12
+secrets.json
+secret_key.txt

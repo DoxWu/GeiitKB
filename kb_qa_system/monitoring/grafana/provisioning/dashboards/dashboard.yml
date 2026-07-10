@@ -1,0 +1,29 @@
+# ============================================
+# Grafana Dashboard Provider 配置
+# ============================================
+# 作用：
+#     配置 Grafana 从指定目录自动加载仪表盘 JSON 文件。
+#     实现仪表盘即代码（Dashboard as Code），版本控制友好。
+#
+# 实现方式：
+#     Grafana 启动时扫描 provider 配置中指定的 path 目录，
+#     自动加载所有 *.json 文件作为仪表盘。
+#     此文件由 docker-compose.monitoring.yml 挂载到 /etc/grafana/provisioning/dashboards/。
+# ============================================
+
+apiVersion: 1
+
+# Dashboard provider 列表
+providers:
+  - name: "kb_qa_dashboards"  # Provider 名称（仅用于日志标识）
+    # 仪表盘 JSON 文件所在目录（容器内路径）
+    # 对应 docker-compose.monitoring.yml 中挂载的 ./grafana/dashboards:/var/lib/grafana/dashboards
+    orgId: 1                   # 组织 ID（默认为 1，单组织模式）
+    folder: "RAG 监控"          # 仪表盘所在文件夹名称（在 Grafana UI 中显示）
+    type: file                 # provider 类型（file=从文件系统加载）
+    disableDeletion: false     # 是否禁止在 UI 中删除（false 允许删除）
+    editable: true             # 是否允许在 UI 中编辑（true 允许，便于临时调整）
+    updateIntervalSeconds: 30  # 扫描目录的间隔（秒），文件变更后自动重新加载
+    allowUiUpdates: true       # 允许 UI 修改回写文件（便于保存修改）
+    options:
+      path: /var/lib/grafana/dashboards  # 仪表盘 JSON 文件目录（容器内绝对路径）

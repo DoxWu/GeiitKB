@@ -1,0 +1,115 @@
+# ============================================
+# GeiIt企业知识库 - 后端 Dockerfile（生产版）
+# ============================================
+# 作用：
+#     构建后端镜像，包含 FastAPI 应用、Celery Worker、Flower 监控。
+#     通过 ROLE 环境变量切换启动角色（api / worker / flower）。
+#
+# 构建方法：
+#     docker build -t kb-qa-backend ./backend
+#
+# 运行方法：
+#     docker run -p 8000:8000 --env-file .env -e ROLE=api kb-qa-backend
+#     docker run --env-file .env -e ROLE=worker kb-qa-backend
+#
+# 设计要点：
+#     1. 多阶段构建：builder 编译依赖，runtime 只保留运行时必需文件
+#     2. 依赖装到 /opt/venv（独立虚拟环境），源码在 /app
+#        → docker-compose 开发环境挂载 ./backend:/app 不会覆盖依赖
+#     3. 非 root 用户运行，提升安全性
+# ============================================
+
+# --------------------------------------------
+# 阶段 1：构建阶段（编译并安装 Python 依赖到虚拟环境）
+# --------------------------------------------
+FROM python:3.11-slim AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# 安装构建依赖
+# 作用：psycopg 编译需要 libpq-dev，部分包需要 build-essential
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建虚拟环境
+# 作用：将所有 Python 依赖隔离在 /opt/venv，便于多阶段整体复制
+RUN python -m venv /opt/venv
+# 激活虚拟环境（后续 pip 安装都进 venv）
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /app
+
+# 先单独复制依赖文件
+# 作用：利用 Docker 层缓存，代码变更不会重新安装依赖
+COPY requirements.txt .
+
+# 升级 pip 并安装依赖到虚拟环境
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
+
+
+# --------------------------------------------
+# 阶段 2：运行阶段（最小化镜像）
+# --------------------------------------------
+FROM python:3.11-slim AS runtime
+
+LABEL maintainer="kb-qa-system"
+LABEL description="GeiIt企业知识库后端（FastAPI + Celery）"
+
+# 运行时环境变量
+# PATH 包含 venv，使 uvicorn/celery/alembic 命令直接可用
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    PATH="/opt/venv/bin:$PATH" \
+    ROLE=api
+
+# 安装运行时系统依赖
+# 作用：
+#   - libpq5: psycopg 运行时库
+#   - libmagic1: python-magic 文件类型检测
+#   - tesseract-ocr + chi-sim + eng: OCR 中英文识别
+#   - libglib2.0-0/libsm6/libxrender1/libxext6/libgl1: opencv/Pillow 运行时
+#   - curl: 健康检查
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    libmagic1 \
+    tesseract-ocr \
+    tesseract-ocr-chi-sim \
+    tesseract-ocr-eng \
+    libglib2.0-0 \
+    libsm6 \
+    libxrender1 \
+    libxext6 \
+    libgl1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 从构建阶段复制虚拟环境（依赖与源码分离的关键）
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+
+# 复制应用源码
+# 作用：源码独立放在 /app，docker-compose 开发挂载 ./backend:/app 不影响 /opt/venv
+COPY . /app/
+
+# 赋予入口脚本执行权限 + 创建非 root 用户
+# 注意：Windows 宿主 COPY 不保留执行位，需显式 chmod
+RUN chmod +x /app/entrypoint.sh && \
+    groupadd -r kbapp && useradd -r -g kbapp -d /app -s /sbin/nologin kbapp && \
+    chown -R kbapp:kbapp /app /opt/venv
+USER kbapp
+
+# 暴露端口：FastAPI 8000，Flower 5555
+EXPOSE 8000 5555
+
+# 健康检查不在镜像层定义（不同角色探活方式不同）
+# 由 docker-compose 或 railway.json 按服务单独配置
+# 启动入口：根据 ROLE 执行不同角色（api/worker/flower）
+ENTRYPOINT ["/app/entrypoint.sh"]

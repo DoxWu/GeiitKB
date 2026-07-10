@@ -1,0 +1,20 @@
+# GeiIt企业知识库 - 搜索引擎爬虫规则
+# 作用：控制搜索引擎爬虫的抓取行为，保护 API 端点不被索引
+
+# 允许所有爬虫抓取前端页面
+User-agent: *
+# 禁止抓取 API 端点和认证相关路径
+Disallow: /api/
+Disallow: /login
+Disallow: /register
+Disallow: /set-password
+Disallow: /settings
+Disallow: /chat
+
+# 允许抓取首页和文档页面
+Allow: /
+Allow: /privacy
+Allow: /terms
+
+# Sitemap 位置（部署后填写实际域名）
+# Sitemap: https://your-domain.com/sitemap.xml

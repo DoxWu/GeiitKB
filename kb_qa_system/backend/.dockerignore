@@ -1,0 +1,67 @@
+# ============================================
+# Docker 构建忽略文件
+# 作用：排除不必要的文件，减小构建上下文体积，加速构建
+# ============================================
+
+# Python 缓存与虚拟环境
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# 环境变量文件（敏感信息，不打入镜像）
+.env
+.env.local
+.env.*.local
+
+# 测试与覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# IDE 与编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 版本控制
+.git/
+.gitignore
+.gitattributes
+
+# 部署与 CI
+Dockerfile
+.dockerignore
+docker-compose*.yml
+railway.json
+.github/
+
+# 运行时数据（由挂载卷提供，不入镜像）
+uploads/
+data/
+*.db
+*.sqlite3
+chroma/
+
+# 日志
+logs/
+*.log
+
+# 文档
+README.md
+*.md
+docs/
+
+# 系统文件
+.DS_Store
+Thumbs.db

@@ -1,0 +1,74 @@
+# ============================================
+# GeiIt企业知识库 - 后端 .gitignore（补充根目录规则）
+# ============================================
+
+# Python 字节码 / 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 分发 / 打包
+build/
+dist/
+*.egg-info/
+*.egg
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# 测试 / 类型检查缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+# 环境变量（含密钥，禁止上传）
+.env
+.env.local
+.env.production
+.env.*.local
+# 保留示例文件
+!.env.example
+
+# 运行时数据
+uploads/
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# 日志
+logs/
+*.log
+
+# Celery 调度文件
+celerybeat-schedule
+celerybeat.pid
+
+# 临时文件
+*.tmp
+*.temp
+*.bak
+*.swp
+
+# IDE / 编辑器
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 操作系统
+.DS_Store
+Thumbs.db
+Desktop.ini

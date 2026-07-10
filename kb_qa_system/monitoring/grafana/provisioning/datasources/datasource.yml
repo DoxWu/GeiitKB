@@ -1,0 +1,33 @@
+# ============================================
+# Grafana 数据源自动配置
+# ============================================
+# 作用：
+#     Grafana 启动时自动创建 Prometheus 数据源，无需手动在 UI 配置。
+#     通过 provisioning 机制实现基础设施即代码（IaC）。
+#
+# 实现方式：
+#     Grafana 启动时扫描此目录的 YAML 文件，按 apiVersion/kind 解析并创建数据源。
+#     此文件由 docker-compose.monitoring.yml 挂载到 /etc/grafana/provisioning/datasources/。
+# ============================================
+
+apiVersion: 1
+
+# 数据源列表
+datasources:
+  # --------------------------------------------
+  # Prometheus 数据源
+  # --------------------------------------------
+  - name: Prometheus  # 数据源名称（在 Grafana 面板中选择数据源时显示）
+    type: prometheus  # 数据源类型（Prometheus）
+    access: proxy     # proxy=通过 Grafana 后端代理访问（推荐），direct=浏览器直连
+    url: http://prometheus:9090  # Prometheus 服务地址（使用 Docker 服务名）
+    isDefault: true   # 设为默认数据源
+    editable: true    # 允许在 UI 中编辑（开发环境便于调试）
+    jsonData:
+      # Prometheus 查询超时时间
+      timeInterval: "15s"  # 与 prometheus.yml 的 scrape_interval 保持一致
+      httpMethod: POST     # 查询方法（POST 支持更长的查询语句）
+    # 数据源版本号（用于升级时检测变更）
+    version: 1
+    # 唯一标识（uid），面板 JSON 通过此 uid 引用数据源
+    uid: prometheus

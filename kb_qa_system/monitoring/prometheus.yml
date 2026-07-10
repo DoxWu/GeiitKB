@@ -1,0 +1,43 @@
+# ============================================
+# Prometheus 配置文件
+# ============================================
+# 作用：
+#     配置 Prometheus server 的抓取目标和规则。
+#     抓取 FastAPI 应用的 /metrics 端点采集指标。
+#
+# 使用方式：
+#     由 docker-compose.monitoring.yml 挂载到 Prometheus 容器中
+# ============================================
+
+global:
+  # 抓取间隔（默认 15 秒）
+  scrape_interval: 15s
+  # 单次抓取超时
+  scrape_timeout: 10s
+  # 规则评估间隔
+  evaluation_interval: 15s
+
+# 告警规则文件
+rule_files:
+  - "alerts.yml"
+
+# 抓取目标
+scrape_configs:
+  # --------------------------------------------
+  # FastAPI 应用指标
+  # --------------------------------------------
+  - job_name: "kb_qa_api"
+    metrics_path: /metrics
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          service: "kb_qa_api"
+          env: "development"
+
+  # --------------------------------------------
+  # Prometheus 自身指标（可选，用于监控 Prometheus 健康）
+  # --------------------------------------------
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

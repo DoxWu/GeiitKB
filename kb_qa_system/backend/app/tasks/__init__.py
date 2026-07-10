@@ -1,0 +1,20 @@
+"""
+Celery 异步任务模块
+
+作用：
+    定义耗时的后台任务，由 Celery worker 异步执行。
+    主任务：文档处理（解析+清洗+表格+图片+分块+向量化）。
+
+子模块：
+    - document_tasks: 文档处理任务
+"""
+
+from app.tasks.document_tasks import (
+    process_document_task,
+    reprocess_document_task,
+)
+
+__all__ = [
+    "process_document_task",
+    "reprocess_document_task",
+]

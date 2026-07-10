@@ -1,0 +1,180 @@
+# ============================================
+# GeiIt企业知识库 - 本地开发编排（生产级）
+# ============================================
+# 作用：
+#     一键启动完整开发环境，包含 PostgreSQL+pgvector、Redis、
+#     FastAPI 后端、Celery Worker、Flower 监控。
+#
+# 使用方式：
+#     首次启动：docker-compose up -d
+#     查看日志：docker-compose logs -f api
+#     停止：    docker-compose down
+#     清空数据：docker-compose down -v
+#
+# 前置准备：
+#     1. 复制 backend/.env.example 为 backend/.env
+#     2. 修改 .env 中的 OPENAI_API_KEY 等敏感配置
+# ============================================
+
+services:
+  # --------------------------------------------
+  # PostgreSQL + pgvector 数据库
+  # --------------------------------------------
+  postgres:
+    # 作用：主数据库，pgvector/pgvector 镜像已预装 pgvector 扩展
+    image: pgvector/pgvector:pg16
+    container_name: kb_qa_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: kb_qa
+      # 作用：启动时自动创建 pgvector 扩展
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      # 作用：数据持久化，容器删除后数据保留
+      - postgres_data:/var/lib/postgresql/data
+      # 作用：启动时自动创建 pgvector 扩展和全文检索配置
+      - ./backend/scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d kb_qa"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --------------------------------------------
+  # Redis 缓存（缓存 + 限流 + Celery Broker）
+  # --------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: kb_qa_redis
+    restart: unless-stopped
+    # 作用：开启 AOF 持久化，重启不丢数据；设置最大内存与淘汰策略
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --------------------------------------------
+  # FastAPI 后端 API 服务
+  # --------------------------------------------
+  api:
+    # 作用：从 backend/Dockerfile 构建，启动 API 服务
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: kb_qa_api
+    restart: unless-stopped
+    environment:
+      ROLE: api
+      ENVIRONMENT: development
+      DEBUG: "True"
+      PORT: 8000
+      # 数据库（使用服务名 postgres 连接）
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/kb_qa
+      # Redis（共享一个 Redis 实例，不同 db 隔离）
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      UVICORN_WORKERS: 1
+      # 作用：启用 Prometheus 指标采集，监控栈通过此开关控制
+      # 启用后访问 /metrics 端点获取指标数据，Prometheus server 抓取此端点
+      # 监控栈启动：docker-compose -f docker-compose.yml -f monitoring/docker-compose.monitoring.yml up -d
+      ENABLE_PROMETHEUS: "True"
+      # 其余配置从 .env 文件读取（OPENAI_API_KEY 等）
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      # 作用：开发环境挂载源码，代码修改即时生效（生产环境注释掉）
+      - ./backend:/app
+      - uploads_data:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # 作用：通过 /health 接口判断 API 是否就绪
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+
+  # --------------------------------------------
+  # Celery Worker（异步文档处理）
+  # --------------------------------------------
+  worker:
+    # 作用：处理文档解析、向量化等耗时任务，复用同一镜像
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: kb_qa_worker
+    restart: unless-stopped
+    environment:
+      ROLE: worker
+      ENVIRONMENT: development
+      CELERY_WORKER_CONCURRENCY: 2
+      CELERY_MAX_TASKS_PER_CHILD: 100
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/kb_qa
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend:/app
+      - uploads_data:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        # 作用：等 API 健康后再启动 worker，确保数据库迁移已完成
+        condition: service_healthy
+
+  # --------------------------------------------
+  # Flower（Celery 任务监控面板）
+  # --------------------------------------------
+  flower:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: kb_qa_flower
+    restart: unless-stopped
+    environment:
+      ROLE: flower
+      FLOWER_PORT: 5555
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    env_file:
+      - ./backend/.env
+    ports:
+      - "5555:5555"
+    depends_on:
+      - worker
+    healthcheck:
+      # 作用：Flower 自带健康接口
+      test: ["CMD", "curl", "-f", "http://localhost:5555/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# ============================================
+# 持久化卷
+# ============================================
+volumes:
+  postgres_data:    # PostgreSQL 数据
+  redis_data:       # Redis AOF 持久化
+  uploads_data:     # 上传文件共享（api 和 worker 共享）

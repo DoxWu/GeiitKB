@@ -1,0 +1,96 @@
+# ============================================
+# GeiIt企业知识库 - 监控栈（Prometheus + Grafana）
+# ============================================
+# 作用：
+#     启动 Prometheus 指标采集和 Grafana 可视化面板。
+#     需与主 docker-compose.yml 一起使用（共享网络）。
+#
+# 使用方式：
+#     启动监控栈：
+#     docker-compose -f docker-compose.yml -f monitoring/docker-compose.monitoring.yml up -d
+#
+#     仅启动监控（需主服务已在运行）：
+#     docker-compose -f monitoring/docker-compose.monitoring.yml up -d
+#     （需确保监控容器与主服务在同一 Docker 网络）
+#
+# 访问地址：
+#     Prometheus: http://localhost:9090
+#     Grafana:    http://localhost:3001 (admin/admin)
+#
+# 前置准备：
+#     1. 在 backend/.env 中设置 ENABLE_PROMETHEUS=true
+#     2. 主服务（api）需暴露 /metrics 端点
+# ============================================
+
+services:
+  # --------------------------------------------
+  # Prometheus 指标采集
+  # --------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: kb_qa_prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      # Prometheus 配置和告警规则
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      # 数据持久化
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    # 连接到主 docker-compose 的网络（确保能访问 api:8000）
+    networks:
+      - default
+
+  # --------------------------------------------
+  # Grafana 可视化面板
+  # --------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: kb_qa_grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      # 默认管理员账号（仅开发环境，生产环境务必修改）
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      # 允许匿名访问（仅开发环境，生产环境设为 false）
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      # 数据源和面板自动配置
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # 数据持久化
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - default
+
+# ============================================
+# 持久化卷
+# ============================================
+volumes:
+  prometheus_data:    # Prometheus 指标数据（30 天保留）
+  grafana_data:       # Grafana 配置和用户数据
+
+# ============================================
+# 网络
+# ============================================
+# 使用 default 网络时，docker-compose 会自动将此文件的容器
+# 加入主 docker-compose 的网络（通过项目名关联）。
+# 如需手动指定，取消注释以下配置并替换为实际网络名。
+# ============================================
+# networks:
+#   default:
+#     external: true
+#     name: kb_qa_system_default

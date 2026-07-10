@@ -1,0 +1,820 @@
+# GeiIt 企业知识库 — Railway 完整部署指南
+
+> 本指南将带你从零开始，将 GeiIt 企业知识库完整部署到 Railway 平台。
+>
+> **预计部署时间**：30–60 分钟
+> **部署架构**：前端（nginx） + 后端 API（FastAPI） + Worker（Celery） + PostgreSQL(pgvector) + Redis
+
+---
+
+## 目录
+
+1. [部署架构总览](#1-部署架构总览)
+2. [前置准备](#2-前置准备)
+3. [第 1 步：创建 Railway 项目](#第-1-步创建-railway-项目)
+4. [第 2 步：添加 PostgreSQL 数据库](#第-2-步添加-postgresql-数据库)
+5. [第 3 步：添加 Redis 缓存](#第-3-步添加-redis-缓存)
+6. [第 4 步：部署后端 API 服务](#第-4-步部署后端-api-服务)
+7. [第 5 步：部署 Celery Worker 服务](#第-5-步部署-celery-worker-服务)
+8. [第 6 步：部署前端服务](#第-6-步部署前端服务)
+9. [第 7 步：验证部署](#第-7-步验证部署)
+10. [第 8 步：配置自定义域名（可选）](#第-8-步配置自定义域名可选)
+11. [环境变量完整参考](#环境变量完整参考)
+12. [监控与日志](#监控与日志)
+13. [备份策略](#备份策略)
+14. [回滚流程](#回滚流程)
+15. [部署检查清单](#部署检查清单)
+16. [常见问题排查](#常见问题排查)
+
+---
+
+## 1. 部署架构总览
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    Railway 项目                       │
+│                                                       │
+│  ┌──────────┐    ┌──────────┐    ┌───────────────┐  │
+│  │ 前端      │───▶│ 后端 API  │───▶│ PostgreSQL    │  │
+│  │ (nginx)  │    │ (FastAPI)│    │ + pgvector    │  │
+│  │ :80      │    │ :8000    │    │               │  │
+│  └──────────┘    └────┬─────┘    └───────────────┘  │
+│                       │                              │
+│                       ▼              ┌─────────────┐ │
+│              ┌──────────────┐        │ Redis        │ │
+│              │ Celery Worker │───────▶│ (缓存+队列)  │ │
+│              │ (异步任务)    │        │             │ │
+│              └──────────────┘        └─────────────┘ │
+│                                                       │
+│  用户 ───HTTPS───▶ 前端 ───CORS───▶ 后端 API         │
+│                                       │               │
+│                          Worker ◀─────┘               │
+│                       (通过 Redis 队列通信)            │
+└─────────────────────────────────────────────────────┘
+```
+
+### 服务清单
+
+| 服务 | 镜像 | 端口 | 作用 |
+|------|------|------|------|
+| 前端 | nginx:1.25-alpine | 80 | 静态资源 + SPA 路由 |
+| 后端 API | python:3.11-slim | 8000 | FastAPI REST API |
+| Worker | python:3.11-slim | — | Celery 异步任务（文档解析/向量化） |
+| PostgreSQL | Railway 插件 | 5432 | 主数据库 + pgvector 向量存储 |
+| Redis | Railway 插件 | 6379 | 缓存 + 限流 + 任务队列 + Token 黑名单 |
+
+---
+
+## 2. 前置准备
+
+### 2.1 账号准备
+
+- [ ] **Railway 账号**：注册 [railway.app](https://railway.app)
+- [ ] **GitHub 账号**：代码将推送到 GitHub 仓库
+- [ ] **LLM API Key**：OpenAI / 智谱 AI / 通义千问（任选其一）
+
+### 2.2 代码准备
+
+将项目推送到 GitHub 仓库：
+
+```bash
+# 在项目根目录执行
+git init
+git add .
+git commit -m "Initial commit: GeiIt企业知识库"
+git branch -M main
+git remote add origin https://github.com/<你的用户名>/<仓库名>.git
+git push -u origin main
+```
+
+> **仓库结构要求**：
+> ```
+> <仓库根>/
+> ├── kb_qa_system/
+> │   ├── backend/          # 后端代码
+> │   │   ├── app/
+> │   │   ├── alembic/
+> │   │   ├── Dockerfile
+> │   │   ├── railway.json
+> │   │   ├── entrypoint.sh
+> │   │   └── requirements.txt
+> │   └── frontend/         # 前端代码
+> │       ├── src/
+> │       ├── public/
+> │       ├── Dockerfile
+> │       ├── railway.json
+> │       ├── nginx.conf
+> │       └── package.json
+> └── docs/
+> ```
+
+### 2.3 生成密钥
+
+在部署前，生成以下密钥（保存好，稍后配置环境变量时使用）：
+
+```bash
+# 生成 SECRET_KEY（JWT 签名密钥，≥32 字符）
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+# 输出示例：dG9wLXNlY3JldC1rZXktZm9yLXByb2R1Y3Rpb24...
+
+# 生成 Prometheus 监控密码（如需启用监控）
+python -c "import secrets; print(secrets.token_urlsafe(16))"
+```
+
+---
+
+## 3. 部署步骤
+
+### 第 1 步：创建 Railway 项目
+
+1. 登录 [Railway Dashboard](https://railway.app/dashboard)
+2. 点击 **New Project**
+3. 选择 **Deploy from GitHub repo**
+4. 授权 Railway 访问你的 GitHub 仓库
+5. 选择包含 GeiIt 企业知识库代码的仓库
+
+> ⚠️ **暂不部署任何服务**，先创建空项目，稍后逐个添加服务和数据库。
+
+---
+
+### 第 2 步：添加 PostgreSQL 数据库
+
+GeiIt 企业知识库使用 PostgreSQL + pgvector 扩展存储文档向量和结构化数据。
+
+1. 在 Railway 项目页面，点击 **New → Database → Add PostgreSQL**
+2. Railway 会自动创建 PostgreSQL 实例并注入 `DATABASE_URL` 环境变量
+3. **启用 pgvector 扩展**：
+   - 点击刚创建的 PostgreSQL 服务
+   - 进入 **Query** 标签页
+   - 执行以下 SQL：
+     ```sql
+     CREATE EXTENSION IF NOT EXISTS vector;
+     ```
+   - 确认返回 `CREATE EXTENSION`（表示 pgvector 已启用）
+
+4. **确认数据库连接信息**：
+   - 在 PostgreSQL 服务的 **Variables** 标签页，找到 `DATABASE_URL`
+   - 格式类似：`postgresql://postgres:password@monorail.proxy.rlwy.net:12345/railway`
+
+> 💡 **如果 Railway 的 PostgreSQL 不支持 pgvector**：
+> 
+> Railway 的 PostgreSQL 插件已默认支持 pgvector。如果遇到问题，可在 Railway 设置中将 PostgreSQL 版本升级到 15+，或在 Query 中手动执行 `CREATE EXTENSION vector;`。
+
+---
+
+### 第 3 步：添加 Redis 缓存
+
+Redis 用于：缓存、限流、Token 黑名单、Celery 任务队列。
+
+1. 在 Railway 项目页面，点击 **New → Database → Add Redis**
+2. Railway 会自动创建 Redis 实例并注入 `REDIS_URL` 环境变量
+3. **确认 Redis 连接信息**：
+   - 在 Redis 服务的 **Variables** 标签页，找到 `REDIS_URL`
+   - 格式类似：`redis://default:password@monorail.proxy.rlwy.net:6379`
+
+> ⚠️ **重要**：Railway Redis 默认关闭了持久化。由于系统采用 fail-closed 策略（Redis 故障时拒绝请求而非放行），建议在 Redis 服务设置中启用持久化（AOF 或 RDB），避免重启后 Token 黑名单丢失。
+
+---
+
+### 第 4 步：部署后端 API 服务
+
+#### 4.1 创建后端服务
+
+1. 在 Railway 项目页面，点击 **New → GitHub Repository**
+2. 选择你的代码仓库
+3. Railway 会自动检测到仓库中的 `railway.json` 文件
+4. **设置根目录**：
+   - 点击刚创建的服务
+   - 进入 **Settings** 标签页
+   - 找到 **Root Directory**，设置为 `kb_qa_system/backend`
+   - Railway 会自动使用该目录下的 `Dockerfile` 和 `railway.json`
+
+#### 4.2 配置后端环境变量
+
+在服务的 **Variables** 标签页，添加以下环境变量：
+
+**必须配置的变量**：
+
+| 变量名 | 值 | 说明 |
+|--------|-----|------|
+| `ENVIRONMENT` | `production` | 生产环境标识 |
+| `DEBUG` | `False` | 关闭调试模式 |
+| `SECRET_KEY` | （第 2.3 步生成的密钥） | JWT 签名密钥（≥32 字符） |
+| `OPENAI_API_KEY` | `sk-your-key` | LLM API Key |
+| `OPENAI_API_BASE` | `https://api.openai.com/v1` | LLM API 地址（智谱用 `https://open.bigmodel.cn/api/paas/v4`） |
+| `LLM_MODEL_NAME` | `gpt-3.5-turbo` | 主模型名称（智谱用 `glm-4`） |
+| `EMBEDDING_MODEL_NAME` | `text-embedding-ada-002` | Embedding 模型（智谱用 `embedding-2`） |
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` | 引用 PostgreSQL 服务的变量 |
+| `REDIS_URL` | `${{Redis.REDIS_URL}}` | 引用 Redis 服务的变量 |
+| `CELERY_BROKER_URL` | `${{Redis.REDIS_URL}}` | Celery 消息队列（复用 Redis） |
+| `CELERY_RESULT_BACKEND` | `${{Redis.REDIS_URL}}` | Celery 结果存储（复用 Redis） |
+| `CORS_ORIGINS` | `["https://你的前端域名.up.railway.app"]` | 允许的前端域名（**先填占位，第 6 步获取前端域名后更新**） |
+
+**可选配置的变量**：
+
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `UVICORN_WORKERS` | `1` | API 工作进程数（Railway 免费版建议 1–2） |
+| `ENABLE_OCR` | `True` | OCR 识别（扫描件支持，关闭可节省资源） |
+| `ENABLE_PROMETHEUS` | `False` | Prometheus 监控（如需启用设为 `True`） |
+| `ENABLE_SENTRY` | `False` | Sentry 错误监控（如需启用设为 `True`） |
+| `SENTRY_DSN` | （空） | Sentry DSN 地址 |
+
+> 💡 **引用其他服务变量的语法**：在 Railway 中，使用 `${{服务名.变量名}}` 引用其他服务的变量。例如 `${{Postgres.DATABASE_URL}}` 会自动替换为 PostgreSQL 服务的 `DATABASE_URL` 值。具体服务名以 Railway 中显示的为准（通常为 `Postgres` 和 `Redis`）。
+
+#### 4.3 确认部署配置
+
+后端 `railway.json` 已配置好以下内容（无需手动修改）：
+
+```json
+{
+  "build": { "builder": "DOCKERFILE", "dockerfilePath": "Dockerfile" },
+  "deploy": {
+    "startCommand": "/app/entrypoint.sh",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 60,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 5
+  }
+}
+```
+
+- **启动命令**：`entrypoint.sh` 会自动执行 `alembic upgrade head`（数据库迁移），然后启动 uvicorn
+- **健康检查**：访问 `/health` 端点，检查 API + 数据库 + Redis 连通性
+- **重启策略**：失败时自动重启（最多 5 次）
+
+#### 4.4 部署并验证
+
+1. 添加完所有环境变量后，Railway 会自动触发构建
+2. 在 **Deployments** 标签页查看构建日志
+3. 构建完成后，在 **Settings** 标签页找到 **Networking** → **Generate Domain**
+4. Railway 会分配一个域名，如 `https://geiit-backend-production.up.railway.app`
+5. 访问 `https://你的后端域名/health`，确认返回：
+   ```json
+   {
+     "status": "healthy",
+     "service": "GeiIt企业知识库",
+     "checks": {
+       "database": { "status": "healthy", "latency_ms": 2 },
+       "redis": { "status": "healthy", "latency_ms": 1 }
+     }
+   }
+   ```
+
+> ✅ **数据库迁移验证**：查看部署日志，确认出现 `✅ 数据库迁移完成` 消息。这表示 Alembic 已成功创建所有表和索引（包括 pgvector 的 IVFFlat 索引）。
+
+---
+
+### 第 5 步：部署 Celery Worker 服务
+
+Worker 负责异步处理文档（解析、分块、向量化），是文档上传功能的核心依赖。
+
+#### 5.1 创建 Worker 服务
+
+1. 在 Railway 项目页面，点击 **New → GitHub Repository**
+2. 选择同一代码仓库
+3. **设置根目录**为 `kb_qa_system/backend`（与 API 服务相同）
+4. 这个服务也使用同一个 Dockerfile，但通过 `ROLE` 环境变量切换启动角色
+
+#### 5.2 配置 Worker 环境变量
+
+Worker 服务需要与 API 服务**完全相同的基础环境变量**（除了 Worker 不需要 `CORS_ORIGINS`）。
+
+最快的方式：在 Railway 中，你可以逐个添加，或使用 **Raw Editor** 批量粘贴。
+
+**必须配置的变量**：
+
+| 变量名 | 值 |
+|--------|-----|
+| `ENVIRONMENT` | `production` |
+| `DEBUG` | `False` |
+| `SECRET_KEY` | （与 API 服务相同的值） |
+| `OPENAI_API_KEY` | （与 API 服务相同的值） |
+| `OPENAI_API_BASE` | （与 API 服务相同的值） |
+| `LLM_MODEL_NAME` | （与 API 服务相同的值） |
+| `EMBEDDING_MODEL_NAME` | （与 API 服务相同的值） |
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
+| `REDIS_URL` | `${{Redis.REDIS_URL}}` |
+| `CELERY_BROKER_URL` | `${{Redis.REDIS_URL}}` |
+| `CELERY_RESULT_BACKEND` | `${{Redis.REDIS_URL}}` |
+| `ROLE` | `worker` |
+
+> ⚠️ **关键**：`ROLE=worker` 会让 `entrypoint.sh` 启动 Celery Worker 而非 FastAPI。
+
+**可选变量**：
+
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `CELERY_WORKER_CONCURRENCY` | `2` | Worker 并发数 |
+| `CELERY_MAX_TASKS_PER_CHILD` | `100` | 每个 Worker 进程处理最大任务数后重启（防内存泄漏） |
+
+#### 5.3 修改 Worker 的健康检查
+
+Worker 服务没有 HTTP 端点，需要修改健康检查方式：
+
+1. 进入 Worker 服务的 **Settings** 标签页
+2. 找到 **Healthcheck**，将其设为空或禁用（Railway 对非 HTTP 服务会使用进程存活检查）
+3. 或者设置自定义健康检查命令：
+   - **Healthcheck Path**：留空
+   - Railway 会通过检查进程是否存活来判断健康状态
+
+#### 5.4 部署并验证
+
+1. 部署完成后，查看日志，确认出现：
+   ```
+   🔧 启动 Celery Worker...
+   celery@... ready.
+   ```
+2. Worker 会连接 Redis 和 PostgreSQL，等待处理文档任务
+
+---
+
+### 第 6 步：部署前端服务
+
+#### 6.1 创建前端服务
+
+1. 在 Railway 项目页面，点击 **New → GitHub Repository**
+2. 选择同一代码仓库
+3. **设置根目录**为 `kb_qa_system/frontend`
+
+#### 6.2 配置构建参数
+
+前端 Dockerfile 使用构建参数（build arg）注入 API 地址。在 Railway 中通过 **Service Variables** 配置：
+
+在服务的 **Variables** 标签页，添加：
+
+| 变量名 | 值 | 说明 |
+|--------|-----|------|
+| `VITE_API_BASE_URL` | `https://你的后端域名.up.railway.app/api/v1` | 后端 API 公网地址（替换为第 4.4 步获取的域名） |
+| `VITE_APP_TITLE` | `GeiIt企业知识库` | 应用标题 |
+
+> ⚠️ **重要**：
+> - `VITE_API_BASE_URL` 必须是后端的**公网 HTTPS 域名**，以 `/api/v1` 结尾
+> - 这是构建时注入的变量（Vite 在构建时读取），修改后需要**重新部署**前端服务才会生效
+
+#### 6.3 更新后端 CORS 配置
+
+1. 获取前端域名（第 6.4 步部署后会生成）
+2. 回到后端 API 服务的 **Variables** 标签页
+3. 更新 `CORS_ORIGINS` 为：
+   ```
+   ["https://你的前端域名.up.railway.app"]
+   ```
+4. 如有自定义域名，也需要加入：
+   ```
+   ["https://你的前端域名.up.railway.app","https://your-custom-domain.com"]
+   ```
+
+#### 6.4 部署并获取域名
+
+1. Railway 会自动构建前端（node 编译 → nginx 镜像）
+2. 构建完成后，在 **Settings → Networking → Generate Domain**
+3. 获取前端域名，如 `https://geiit-frontend-production.up.railway.app`
+4. **用此域名更新后端的 `CORS_ORIGINS` 变量**
+5. **用后端域名更新前端的 `VITE_API_BASE_URL` 变量**
+6. 重新部署前后端服务使配置生效
+
+#### 6.5 验证前端
+
+1. 访问前端域名，应看到登录页面
+2. 尝试注册账号并登录
+3. 登录成功后进入文档管理页面
+4. 尝试上传一个小文档，观察是否触发 Worker 处理
+
+---
+
+### 第 7 步：验证部署
+
+#### 7.1 健康检查
+
+```bash
+# 后端 API 健康
+curl https://你的后端域名/health
+# 应返回 status: "healthy"
+
+# 前端可访问
+curl -I https://你的前端域名
+# 应返回 200 OK
+```
+
+#### 7.2 功能验证清单
+
+- [ ] 访问前端域名，显示登录页面
+- [ ] 注册新账号，登录成功
+- [ ] 上传一个 PDF/Markdown 文档
+- [ ] 文档状态变为 "completed"（Worker 处理完成）
+- [ ] 进入问答页面，提问并收到回答
+- [ ] 设置页面导出个人数据
+- [ ] 登出后重新登录
+
+#### 7.3 日志检查
+
+在 Railway Dashboard 中查看各服务日志：
+
+- **后端 API 日志**：确认无 `ERROR` 级别日志，JSON 格式输出
+- **Worker 日志**：确认文档处理任务执行无异常
+- **PostgreSQL 日志**：确认无连接超时或错误
+- **Redis 日志**：确认无内存溢出或连接拒绝
+
+---
+
+### 第 8 步：配置自定义域名（可选）
+
+### 8.1 前端自定义域名
+
+1. 在前端服务的 **Settings → Networking**
+2. 点击 **Custom Domain**
+3. 输入你的域名（如 `kb.yourcompany.com`）
+4. Railway 会生成 CNAME 记录，将其添加到你的 DNS 提供商
+5. 等待 DNS 生效（通常几分钟到几小时）
+6. Railway 自动配置 SSL 证书
+
+### 8.2 更新 CORS 配置
+
+添加自定义域名后，更新后端 `CORS_ORIGINS`：
+
+```
+["https://kb.yourcompany.com","https://你的前端域名.up.railway.app"]
+```
+
+### 8.3 更新前端 API 地址（如需）
+
+如果使用自定义域名作为前端入口，无需修改 `VITE_API_BASE_URL`（前端通过 CORS 直接访问后端 Railway 域名）。
+
+---
+
+## 环境变量完整参考
+
+### 后端 API 服务
+
+```env
+# ===== 应用配置 =====
+ENVIRONMENT=production
+DEBUG=False
+PORT=8000
+
+# ===== 数据库 =====
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+
+# ===== Redis =====
+REDIS_URL=${{Redis.REDIS_URL}}
+
+# ===== Celery =====
+CELERY_BROKER_URL=${{Redis.REDIS_URL}}
+CELERY_RESULT_BACKEND=${{Redis.REDIS_URL}}
+
+# ===== JWT 认证 =====
+SECRET_KEY=<生成的32+字符随机密钥>
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=15
+REFRESH_TOKEN_EXPIRE_DAYS=7
+
+# ===== CORS =====
+CORS_ORIGINS=["https://你的前端域名.up.railway.app"]
+
+# ===== LLM 配置 =====
+OPENAI_API_KEY=<你的API密钥>
+OPENAI_API_BASE=https://api.openai.com/v1
+LLM_MODEL_NAME=gpt-3.5-turbo
+LLM_FALLBACK_MODEL_NAME=gpt-3.5-turbo
+EMBEDDING_MODEL_NAME=text-embedding-ada-002
+EMBEDDING_DIMENSION=1536
+
+# ===== 运行时 =====
+UVICORN_WORKERS=1
+ENABLE_OCR=True
+```
+
+### Celery Worker 服务
+
+```env
+# ===== 角色标识（关键！）=====
+ROLE=worker
+
+# ===== 应用配置 =====
+ENVIRONMENT=production
+DEBUG=False
+
+# ===== 数据库 =====
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+
+# ===== Redis =====
+REDIS_URL=${{Redis.REDIS_URL}}
+
+# ===== Celery =====
+CELERY_BROKER_URL=${{Redis.REDIS_URL}}
+CELERY_RESULT_BACKEND=${{Redis.REDIS_URL}}
+CELERY_WORKER_CONCURRENCY=2
+CELERY_MAX_TASKS_PER_CHILD=100
+
+# ===== JWT =====
+SECRET_KEY=<与API服务相同的密钥>
+
+# ===== LLM 配置 =====
+OPENAI_API_KEY=<与API服务相同的密钥>
+OPENAI_API_BASE=https://api.openai.com/v1
+LLM_MODEL_NAME=gpt-3.5-turbo
+EMBEDDING_MODEL_NAME=text-embedding-ada-002
+EMBEDDING_DIMENSION=1536
+
+# ===== 运行时 =====
+ENABLE_OCR=True
+```
+
+### 前端服务
+
+```env
+VITE_API_BASE_URL=https://你的后端域名.up.railway.app/api/v1
+VITE_APP_TITLE=GeiIt企业知识库
+```
+
+---
+
+## 监控与日志
+
+### 日志查看
+
+Railway 自动收集所有服务的标准输出日志。在 Dashboard 中点击对应服务 → **Deployments** → 查看日志。
+
+**生产环境日志格式**：JSON 结构化日志（使用 structlog），每条日志包含：
+
+```json
+{
+  "event": "应用启动成功！环境: production",
+  "level": "info",
+  "timestamp": "2026-07-10T12:00:00Z"
+}
+```
+
+### 健康监控
+
+- **后端健康检查**：`GET /health`（Railway 每 30 秒自动检查）
+  - 返回 `status: "healthy"` — 一切正常
+  - 返回 `status: "degraded"` — 数据库或 Redis 异常
+- **前端健康检查**：`GET /`（nginx 返回 200）
+
+### 可选：启用 Prometheus 监控
+
+1. 在后端环境变量中设置：
+   ```env
+   ENABLE_PROMETHEUS=True
+   PROMETHEUS_AUTH_ENABLED=True
+   PROMETHEUS_AUTH_USER=prometheus
+   PROMETHEUS_AUTH_PASSWORD=<生成的密码>
+   PROMETHEUS_INCLUDE_PATH_LABEL=False
+   ```
+2. 访问 `https://你的后端域名/metrics`（需 Basic Auth）
+3. 将 metrics 端点接入 Grafana / Datadog 等监控系统
+
+### 可选：启用 Sentry 错误监控
+
+1. 注册 [Sentry](https://sentry.io) 账号，获取 DSN
+2. 在后端环境变量中设置：
+   ```env
+   ENABLE_SENTRY=True
+   SENTRY_DSN=https://your-sentry-dsn@sentry.io/123
+   ```
+
+---
+
+## 备份策略
+
+### 数据库备份
+
+Railway 的 PostgreSQL 插件支持自动备份：
+
+1. 进入 PostgreSQL 服务的 **Settings** 标签页
+2. 找到 **Backups**，开启自动备份
+3. 建议配置：
+   - 备份频率：每日一次
+   - 保留天数：7–30 天
+
+### 手动备份
+
+```bash
+# 导出数据库（使用 Railway 提供的连接信息）
+pg_dump "${DATABASE_URL}" > backup_$(date +%Y%m%d).sql
+
+# 恢复数据库
+psql "${DATABASE_URL}" < backup_20260710.sql
+```
+
+### Redis 备份
+
+Redis 中的数据（Token 黑名单、限流计数、FAQ 缓存）均为临时数据，可通过应用逻辑重建。建议在 Redis 服务设置中启用 AOF 持久化，减少重启后的数据丢失。
+
+---
+
+## 回滚流程
+
+### 方式 1：Railway Dashboard 回滚（推荐）
+
+1. 进入服务（API/前端/Worker）的 **Deployments** 标签页
+2. 找到上一个正常运行的部署
+3. 点击 **Redeploy**（重新部署该版本）
+
+### 方式 2：Git 回滚
+
+```bash
+# 回退到上一个 commit
+git revert HEAD
+git push origin main
+# Railway 会自动检测到新 push 并重新部署
+```
+
+### 方式 3：数据库回滚
+
+如果数据库迁移导致问题：
+
+```bash
+# 回退到上一个 Alembic 迁移版本
+alembic downgrade -1
+
+# 回退到指定版本
+alembic downgrade <revision_id>
+
+# 查看迁移历史
+alembic history
+```
+
+> ⚠️ **注意**：数据库回滚可能导致数据丢失，仅在必要时使用。回滚前务必备份数据库。
+
+---
+
+## 部署检查清单
+
+部署完成后，逐项确认：
+
+### 基础设施
+- [ ] PostgreSQL 服务已创建，pgvector 扩展已启用（`CREATE EXTENSION vector;`）
+- [ ] Redis 服务已创建，持久化已启用
+- [ ] 后端 API 服务已部署，`/health` 返回 healthy
+- [ ] Celery Worker 服务已部署，日志显示 ready
+- [ ] 前端服务已部署，可正常访问
+
+### 环境变量
+- [ ] `SECRET_KEY` 已设置（≥32 字符，非弱默认值）
+- [ ] `OPENAI_API_KEY` 已设置且有效
+- [ ] `DATABASE_URL` 引用 PostgreSQL 服务变量
+- [ ] `REDIS_URL` 引用 Redis 服务变量
+- [ ] `CELERY_BROKER_URL` 和 `CELERY_RESULT_BACKEND` 已设置
+- [ ] `CORS_ORIGINS` 包含前端域名（非通配符 `*`）
+- [ ] `ENVIRONMENT=production`，`DEBUG=False`
+- [ ] Worker 服务的 `ROLE=worker`
+
+### 功能验证
+- [ ] 注册新账号成功
+- [ ] 登录获取 Token 成功
+- [ ] 上传文档后状态变为 completed
+- [ ] 问答功能正常（能收到 LLM 回答）
+- [ ] 数据导出功能正常（下载 JSON 文件）
+- [ ] 账号删除功能正常
+
+### 安全检查
+- [ ] `DEBUG=False`，访问 `/docs` 返回 404
+- [ ] `CORS_ORIGINS` 不含通配符 `*`
+- [ ] HTTPS 有效（Railway 自动配置）
+- [ ] 生产环境启动校验通过（日志无 "配置校验失败" 错误）
+
+---
+
+## 常见问题排查
+
+### Q1：后端部署失败 — 构建错误
+
+**症状**：Railway 构建日志显示 `pip install` 失败
+
+**排查**：
+1. 检查 `requirements.txt` 中的依赖版本是否正确
+2. 某些包（如 `opencv-python-headless`、`PyMuPDF`）需要系统依赖，Dockerfile 中已安装
+3. 确认 Dockerfile 的 builder 阶段包含 `build-essential` 和 `libpq-dev`
+
+### Q2：后端启动失败 — 配置校验不通过
+
+**症状**：日志显示 "生产环境配置校验失败"
+
+**排查**：
+1. 检查 `SECRET_KEY` 是否已设置且 ≥32 字符
+2. 检查 `OPENAI_API_KEY` 是否非空
+3. 检查 `DATABASE_URL` 是否以 `postgresql` 开头（不能是 sqlite）
+4. 检查 `CORS_ORIGINS` 是否不含通配符 `*`
+5. 检查 `DEBUG` 是否为 `False`
+
+### Q3：前端访问后端 API 报 CORS 错误
+
+**症状**：浏览器控制台显示 `Access-Control-Allow-Origin` 错误
+
+**排查**：
+1. 检查后端 `CORS_ORIGINS` 是否包含前端域名（精确匹配，包括协议和端口）
+2. 确认 `CORS_ORIGINS` 格式正确：`["https://xxx.up.railway.app"]`
+3. 确认前端 `VITE_API_BASE_URL` 指向正确的后端域名
+4. 修改 CORS 后需**重新部署后端**才生效
+
+### Q4：文档上传后一直处于 "processing" 状态
+
+**症状**：文档状态卡在 processing，未变为 completed
+
+**排查**：
+1. 检查 Worker 服务是否正常运行（日志中是否有 `celery@... ready`）
+2. 检查 Worker 的 `CELERY_BROKER_URL` 是否正确指向 Redis
+3. 检查 Worker 的 `DATABASE_URL` 是否与 API 服务一致
+4. 检查 Worker 日志是否有异常（如 LLM API Key 无效、Embedding 失败）
+5. 确认 Worker 的 `OPENAI_API_KEY` 和 `EMBEDDING_MODEL_NAME` 配置正确
+
+### Q5：数据库迁移失败
+
+**症状**：后端启动日志显示 `alembic upgrade head` 失败
+
+**排查**：
+1. 检查 `DATABASE_URL` 是否正确
+2. 确认 pgvector 扩展已启用：`CREATE EXTENSION vector;`
+3. 查看具体错误信息，可能是 PostgreSQL 版本不兼容
+4. 手动执行迁移：在 Railway 的 PostgreSQL Query 中运行 `SELECT * FROM alembic_version;` 查看当前版本
+
+### Q6：Worker 内存不足（OOM）
+
+**症状**：Worker 日志显示 `Killed` 或容器频繁重启
+
+**排查**：
+1. 降低 `CELERY_WORKER_CONCURRENCY`（如从 2 降到 1）
+2. 降低 `CELERY_MAX_TASKS_PER_CHILD`（让 Worker 更频繁重启释放内存）
+3. 在 Railway 中升级 Worker 服务的资源限制（RAM）
+4. 关闭 `ENABLE_OCR`（OCR 是内存密集型操作）
+
+### Q7：前端构建时 `VITE_API_BASE_URL` 不生效
+
+**症状**：前端构建后仍使用默认 `/api/v1`
+
+**排查**：
+1. Vite 构建参数在 Docker 构建阶段注入，需在 Railway 服务的 Variables 中设置
+2. 修改变量后需点击 **Redeploy** 触发重新构建
+3. 确认变量名拼写正确：`VITE_API_BASE_URL`（不是 `VITE_BASE_URL`）
+
+### Q8：Redis 连接失败
+
+**症状**：后端日志显示 Redis 连接超时或拒绝
+
+**排查**：
+1. 检查 `REDIS_URL` 是否正确引用了 Redis 服务变量
+2. Railway Redis 的连接地址格式为 `redis://default:password@host:port`
+3. 确认 Redis 服务未暂停（Railway 免费版可能自动暂停空闲服务）
+4. 检查 `CELERY_BROKER_URL` 和 `CELERY_RESULT_BACKEND` 是否也正确引用了 Redis
+
+---
+
+## 附录：项目架构速查
+
+```
+kb_qa_system/
+├── backend/                    # 后端
+│   ├── app/
+│   │   ├── main.py            # FastAPI 入口（日志配置、生命周期、路由注册）
+│   │   ├── core/              # 核心配置（config/database/redis/security/celery）
+│   │   ├── api/routes/        # API 路由（auth/documents/chat/stats/metrics）
+│   │   ├── models/            # 数据模型（user/document/conversation/document_chunk）
+│   │   ├── schemas/           # Pydantic 数据验证 Schema
+│   │   ├── services/          # 业务逻辑（RAG/文档处理/LLM 容错等）
+│   │   ├── tasks/             # Celery 异步任务（文档处理流水线）
+│   │   └── middleware/        # 中间件（Prometheus 监控）
+│   ├── alembic/               # 数据库迁移脚本
+│   ├── Dockerfile             # 后端镜像（多阶段构建，含 Tesseract OCR）
+│   ├── railway.json           # Railway 部署配置
+│   ├── entrypoint.sh          # 启动脚本（ROLE=api/worker/flower）
+│   ├── requirements.txt       # Python 依赖
+│   └── .env.example           # 环境变量模板
+│
+├── frontend/                   # 前端
+│   ├── src/
+│   │   ├── api/               # API 客户端（封装 fetch 请求）
+│   │   ├── components/        # React 组件（common/auth/chat/documents/settings）
+│   │   ├── pages/             # 页面（Login/Documents/Chat/Settings/Privacy/Terms）
+│   │   ├── store/             # Zustand 状态管理（auth/document/chat/toast）
+│   │   ├── types/             # TypeScript 类型定义
+│   │   └── utils/             # 工具函数（constants/validate/format/fileType）
+│   ├── public/                # 静态资源（robots.txt 等）
+│   ├── Dockerfile             # 前端镜像（node 构建 → nginx 运行）
+│   ├── railway.json           # Railway 部署配置
+│   ├── nginx.conf             # nginx 配置（SPA 路由 + 缓存 + 安全头）
+│   └── package.json           # Node 依赖
+│
+└── docs/                      # 文档
+    ├── RAILWAY_DEPLOYMENT_GUIDE.md  # 本文件
+    ├── COMPREHENSIVE_REVIEW_8D.md   # 八维度代码审查报告
+    ├── P0_FIX_REPORT.md             # P0 修复报告
+    └── PHASE_E_REPAIR_REPORT.md     # Phase E 修复报告
+```
+
+---
+
+## 技术支持
+
+如部署过程中遇到问题：
+
+1. 查看 Railway 部署日志（Dashboard → 对应服务 → Deployments）
+2. 查看本指南的 [常见问题排查](#常见问题排查) 章节
+3. 检查后端 `/health` 端点返回的具体错误信息
+4. 确认所有环境变量已正确配置（参考 [环境变量完整参考](#环境变量完整参考)）
+
+---
+
+*本指南最后更新：2026-07-10 | GeiIt企业知识库 v1.0.0*

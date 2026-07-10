@@ -1,0 +1,24 @@
+目标
+展示你对 RAG、前后端开发、向量数据库、Prompt工程、API调用 的完整实践能力，直接覆盖岗位描述中的“知识库问答、聊天助手”和“前后端与模型接入”。
+
+功能设计
+用户上传 PDF / Markdown / 网页链接，系统自动解析并构建向量索引
+对话界面支持基于上传知识库的多轮问答
+答案带引用来源（显示原文片段）
+Prompt模板可配置（系统提示词、是否开启追问）
+对话历史持久化（Memory），并可在前端选择清空或回溯
+
+技术栈（贴合任职要求）
+前端：Next.js + Tailwind CSS，实现一个聊天界面（流式输出、Markdown渲染）
+后端：Python FastAPI，负责文件处理、检索、调用LLM
+框架选择：LlamaIndex 或 LangChain（建议先用LlamaIndex做检索链路，再用LangChain做后续Agent项目）
+向量数据库：Chroma 或 Qdrant（本地部署，但展示你对元数据过滤、相似度阈值调节的理解）
+LLM调用：兼容 OpenAI API 格式的模型（可先用 OpenAI / 智谱等免费额度，甚至本地 Ollama 跑小模型）
+其他基础能力：Git 版本管理，README 包含架构图、环境变量配置；部署到 Vercel（前端）+ Railway / Render（后端），提供在线demo链接
+
+命中岗位职责/要求
+参与知识库问答、聊天助手开发
+Prompt、Context、Memory 搭建与优化
+熟悉Python、了解前后端、熟悉React/Next.js
+API调用、HTTP、数据库（包括向量数据库）
+检索优化、多轮对话实践经验

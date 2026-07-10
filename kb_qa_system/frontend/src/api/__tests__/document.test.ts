@@ -1,0 +1,316 @@
+/**
+ * document.ts 单元测试
+ *
+ * 覆盖范围：
+ *   - getDocuments：查询参数构建（含 Bug-1 folder_id 验证）
+ *   - getDocumentDetail：路径参数
+ *   - deleteDocument：DELETE 请求
+ *   - getFolders / createFolder / updateFolder / deleteFolder：Mock 实现
+ */
+
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+// 使用 vi.hoisted 确保 mock 对象在 vi.mock 提升时可用
+const { mockApiClient } = vi.hoisted(() => ({
+  mockApiClient: {
+    get: vi.fn(),
+    post: vi.fn(),
+    patch: vi.fn(),
+    delete: vi.fn(),
+    upload: vi.fn(),
+  },
+}));
+
+vi.mock("@/api/client", () => ({
+  apiClient: mockApiClient,
+}));
+
+import {
+  getDocuments,
+  getDocumentDetail,
+  deleteDocument,
+  reprocessDocument,
+  uploadDocument,
+  getTaskStatus,
+  getFolders,
+  createFolder,
+  updateFolder,
+  deleteFolder,
+} from "@/api/document";
+import type { DocumentResponse } from "@/types/document";
+
+describe("getDocuments", () => {
+  beforeEach(() => {
+    mockApiClient.get.mockReset();
+  });
+
+  it("无参数时请求基础路径", async () => {
+    mockApiClient.get.mockResolvedValueOnce({ items: [], total: 0, page: 1, page_size: 20 });
+    await getDocuments({});
+    expect(mockApiClient.get).toHaveBeenCalledOnce();
+    const endpoint = mockApiClient.get.mock.calls[0][0];
+    expect(endpoint).toMatch(/\/documents/);
+  });
+
+  it("[Bug-1 验证] folder_id 参数被正确传递到查询字符串", async () => {
+    mockApiClient.get.mockResolvedValueOnce({ items: [], total: 0, page: 1, page_size: 20 });
+    await getDocuments({ folder_id: 42 });
+    const endpoint = mockApiClient.get.mock.calls[0][0];
+    expect(endpoint).toContain("folder_id=42");
+  });
+
+  it("page 和 page_size 参数正确传递", async () => {
+    mockApiClient.get.mockResolvedValueOnce({ items: [], total: 0, page: 2, page_size: 10 });
+    await getDocuments({ page: 2, page_size: 10 });
+    const endpoint = mockApiClient.get.mock.calls[0][0];
+    expect(endpoint).toContain("page=2");
+    expect(endpoint).toContain("page_size=10");
+  });
+
+  it("search 参数正确传递", async () => {
+    mockApiClient.get.mockResolvedValueOnce({ items: [], total: 0, page: 1, page_size: 20 });
+    await getDocuments({ search: "测试文档" });
+    const endpoint = mockApiClient.get.mock.calls[0][0];
+    expect(endpoint).toContain("search=");
+    expect(endpoint).toContain(encodeURIComponent("测试文档"));
+  });
+
+  it("sort_by 和 sort_order 参数正确传递", async () => {
+    mockApiClient.get.mockResolvedValueOnce({ items: [], total: 0, page: 1, page_size: 20 });
+    await getDocuments({ sort_by: "file_name", sort_order: "asc" });
+    const endpoint = mockApiClient.get.mock.calls[0][0];
+    expect(endpoint).toContain("sort_by=file_name");
+    expect(endpoint).toContain("sort_order=asc");
+  });
+
+  it("status 参数正确传递", async () => {
+    mockApiClient.get.mockResolvedValueOnce({ items: [], total: 0, page: 1, page_size: 20 });
+    await getDocuments({ status: "completed" });
+    const endpoint = mockApiClient.get.mock.calls[0][0];
+    expect(endpoint).toContain("status=completed");
+  });
+
+  it("所有参数组合时全部传递", async () => {
+    mockApiClient.get.mockResolvedValueOnce({ items: [], total: 0, page: 1, page_size: 20 });
+    await getDocuments({
+      page: 1,
+      page_size: 20,
+      search: "report",
+      sort_by: "created_at",
+      sort_order: "desc",
+      folder_id: 5,
+      status: "completed",
+    });
+    const endpoint = mockApiClient.get.mock.calls[0][0];
+    expect(endpoint).toContain("page=1");
+    expect(endpoint).toContain("page_size=20");
+    expect(endpoint).toContain("search=report");
+    expect(endpoint).toContain("sort_by=created_at");
+    expect(endpoint).toContain("sort_order=desc");
+    expect(endpoint).toContain("folder_id=5");
+    expect(endpoint).toContain("status=completed");
+  });
+});
+
+describe("getDocumentDetail", () => {
+  beforeEach(() => {
+    mockApiClient.get.mockReset();
+  });
+
+  it("使用正确的文档 ID 路径", async () => {
+    const mockDoc: DocumentResponse = {
+      id: 123,
+      title: "Test",
+      file_name: "test.pdf",
+      file_type: ".pdf",
+      file_size: 1024,
+      status: "completed",
+      visibility: "private",
+      processing_step: null,
+      processing_progress: 100,
+      quality_score: 85,
+      quality_issues: null,
+      chunk_count: 10,
+      total_tokens: 500,
+      task_id: null,
+      error_message: null,
+      created_at: "2026-07-10T00:00:00Z",
+      updated_at: "2026-07-10T00:00:00Z",
+    };
+    mockApiClient.get.mockResolvedValueOnce(mockDoc);
+    await getDocumentDetail(123);
+    const endpoint = mockApiClient.get.mock.calls[0][0];
+    expect(endpoint).toContain("/documents/123");
+  });
+});
+
+describe("deleteDocument", () => {
+  beforeEach(() => {
+    mockApiClient.delete.mockReset();
+  });
+
+  it("调用 DELETE 方法", async () => {
+    mockApiClient.delete.mockResolvedValueOnce(undefined);
+    await deleteDocument(456);
+    expect(mockApiClient.delete).toHaveBeenCalledOnce();
+    const endpoint = mockApiClient.delete.mock.calls[0][0];
+    expect(endpoint).toContain("/documents/456");
+  });
+});
+
+describe("reprocessDocument", () => {
+  beforeEach(() => {
+    mockApiClient.post.mockReset();
+  });
+
+  it("调用 POST 重新处理", async () => {
+    mockApiClient.post.mockResolvedValueOnce({ task_id: "task123" });
+    await reprocessDocument(789);
+    expect(mockApiClient.post).toHaveBeenCalledOnce();
+    const endpoint = mockApiClient.post.mock.calls[0][0];
+    expect(endpoint).toContain("/documents/789/reprocess");
+  });
+});
+
+describe("uploadDocument", () => {
+  beforeEach(() => {
+    mockApiClient.upload.mockReset();
+  });
+
+  it("构建 FormData 并调用 upload（仅 file）", async () => {
+    const mockDoc: DocumentResponse = {
+      id: 1,
+      title: "test",
+      file_name: "test.pdf",
+      file_type: ".pdf",
+      file_size: 1024,
+      status: "pending",
+      visibility: "private",
+      processing_step: null,
+      processing_progress: 0,
+      quality_score: null,
+      quality_issues: null,
+      chunk_count: 0,
+      total_tokens: 0,
+      task_id: "task-1",
+      error_message: null,
+      created_at: "2026-07-10T00:00:00Z",
+      updated_at: "2026-07-10T00:00:00Z",
+    };
+    mockApiClient.upload.mockResolvedValueOnce(mockDoc);
+
+    const file = new File(["content"], "test.pdf");
+    const result = await uploadDocument({ file });
+
+    expect(result).toEqual(mockDoc);
+    expect(mockApiClient.upload).toHaveBeenCalledOnce();
+
+    // 验证传递给 upload 的参数
+    const [endpoint, formData, onProgress, signal] = mockApiClient.upload.mock.calls[0];
+    expect(endpoint).toContain("/documents/upload");
+    expect(formData).toBeInstanceOf(FormData);
+    expect(formData.get("file")).toBe(file);
+    expect(onProgress).toBeUndefined();
+    expect(signal).toBeUndefined();
+  });
+
+  it("完整参数（title/category/visibility/folder_id）全部附加到 FormData", async () => {
+    mockApiClient.upload.mockResolvedValueOnce({ id: 1 });
+
+    const file = new File(["content"], "report.pdf");
+    await uploadDocument({
+      file,
+      title: "季度报告",
+      category: "report",
+      visibility: "public",
+      folder_id: 42,
+    });
+
+    const formData = mockApiClient.upload.mock.calls[0][1] as FormData;
+    expect(formData.get("file")).toBe(file);
+    expect(formData.get("title")).toBe("季度报告");
+    expect(formData.get("category")).toBe("report");
+    expect(formData.get("visibility")).toBe("public");
+    expect(formData.get("folder_id")).toBe("42");
+  });
+
+  it("传递 onProgress 和 signal 到 upload", async () => {
+    mockApiClient.upload.mockResolvedValueOnce({ id: 1 });
+
+    const onProgress = vi.fn();
+    const controller = new AbortController();
+    await uploadDocument(
+      { file: new File(["content"], "test.pdf") },
+      onProgress,
+      controller.signal,
+    );
+
+    const [, , progressCb, signal] = mockApiClient.upload.mock.calls[0];
+    expect(progressCb).toBe(onProgress);
+    expect(signal).toBe(controller.signal);
+  });
+});
+
+describe("getTaskStatus", () => {
+  beforeEach(() => {
+    mockApiClient.get.mockReset();
+  });
+
+  it("使用正确的 document_id 路径", async () => {
+    mockApiClient.get.mockResolvedValueOnce({
+      task_id: "task-123",
+      status: "SUCCESS",
+      progress: 100,
+      result: null,
+      error: null,
+    });
+
+    await getTaskStatus(123);
+
+    expect(mockApiClient.get).toHaveBeenCalledOnce();
+    const endpoint = mockApiClient.get.mock.calls[0][0];
+    expect(endpoint).toContain("/documents/123/task-status");
+  });
+});
+
+describe("Folders Mock 实现", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("getFolders - 首次调用返回默认分支", async () => {
+    const result = await getFolders();
+    expect(result.items.length).toBeGreaterThanOrEqual(1);
+    expect(result.items[0].name).toBeTruthy();
+  });
+
+  it("createFolder - 创建新分支后出现在列表中", async () => {
+    await getFolders();
+    const created = await createFolder({ name: "测试分支" });
+    expect(created.name).toBe("测试分支");
+
+    const result = await getFolders();
+    const found = result.items.find((f) => f.name === "测试分支");
+    expect(found).toBeTruthy();
+  });
+
+  it("updateFolder - 重命名分支", async () => {
+    await getFolders();
+    const created = await createFolder({ name: "原名称" });
+    await updateFolder(created.id, { name: "新名称" });
+
+    const result = await getFolders();
+    const updated = result.items.find((f) => f.id === created.id);
+    expect(updated?.name).toBe("新名称");
+  });
+
+  it("deleteFolder - 删除分支后不再出现", async () => {
+    await getFolders();
+    const created = await createFolder({ name: "待删除" });
+    await deleteFolder(created.id);
+
+    const result = await getFolders();
+    const found = result.items.find((f) => f.id === created.id);
+    expect(found).toBeUndefined();
+  });
+});
