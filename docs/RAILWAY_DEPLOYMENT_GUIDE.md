@@ -243,6 +243,14 @@ Redis 用于：缓存、限流、Token 黑名单、Celery 任务队列。
 - **健康检查**：访问 `/health` 端点，检查 API + 数据库 + Redis 连通性
 - **重启策略**：失败时自动重启（最多 5 次）
 
+> ⚠️ **10D 审查提醒（D9-01）**：`entrypoint.sh` 在每个 API 副本启动时执行迁移，**多副本并发部署时可能迁移冲突**。如果 Railway 后端服务配置了多副本（replicas > 1），建议改用 Railway 的 `releaseCommand` 执行迁移：
+> ```json
+> // railway.json deploy 部分新增：
+> "releaseCommand": "alembic upgrade head",
+> "releaseCommandTimeoutSecs": 60
+> ```
+> 同时从 `entrypoint.sh` 中移除迁移步骤（仅保留 uvicorn 启动），避免多副本重复执行迁移。
+
 #### 4.4 部署并验证
 
 1. 添加完所有环境变量后，Railway 会自动触发构建
@@ -263,7 +271,62 @@ Redis 用于：缓存、限流、Token 黑名单、Celery 任务队列。
 
 > ✅ **数据库迁移验证**：查看部署日志，确认出现 `✅ 数据库迁移完成` 消息。这表示 Alembic 已成功创建所有表和索引（包括 pgvector 的 IVFFlat 索引）。
 
-#### 4.5 创建超级管理员账号
+#### 4.5 配置邮件服务（Resend）
+
+系统使用 Resend 作为 SMTP 代理服务发送邮件（注册申请通知、密码设置链接、拒绝通知、账号创建确认）。Resend 免费额度为 3000 封/月，足够中小规模使用。
+
+> 💡 **如果暂不需要邮件功能**：可跳过本步，设置 `EMAIL_ENABLED=False`，系统会跳过邮件发送但注册申请记录仍会创建（降级模式）。部署后随时可补配。
+
+**4.5.1 获取 Resend API Key**
+
+1. 访问 [resend.com](https://resend.com) 注册账号
+2. 进入 [API Keys 页面](https://resend.com/api-keys) 点击 **Create API Key**
+3. 复制生成的 API Key（格式：`re_xxxxxxxxxxxx`），保存好
+
+**4.5.2 验证发件域名（生产环境必需）**
+
+Resend 默认提供 `onboarding@resend.dev` 发件地址，但**仅可发送到你注册 Resend 的邮箱**。生产环境需验证自己的域名：
+
+1. 在 Resend Dashboard → **Domains** → **Add Domain**
+2. 输入你的域名（如 `yourdomain.com`）
+3. 在你的 DNS 提供商添加 Resend 给出的 MX/TXT/SPF 记录
+4. 等待验证通过（通常几分钟到几小时）
+
+**4.5.3 在 Railway 后端服务配置邮件环境变量**
+
+在后端 API 服务的 **Variables** 标签页，添加以下变量：
+
+| 变量名 | 值 | 说明 |
+|--------|-----|------|
+| `EMAIL_ENABLED` | `True` | 启用邮件发送 |
+| `SMTP_HOST` | `smtp.resend.com` | Resend SMTP 地址 |
+| `SMTP_PORT` | `465` | SSL 端口 |
+| `SMTP_USER` | `resend` | 固定值 |
+| `SMTP_PASSWORD` | `re_your_resend_api_key` | 替换为你的 Resend API Key |
+| `SMTP_USE_TLS` | `True` | 启用 SSL 加密 |
+| `SMTP_START_TLS` | `False` | 不使用 STARTTLS（已用 SSL） |
+| `SMTP_TIMEOUT` | `30` | SMTP 超时（秒） |
+| `EMAIL_FROM` | `GeiIt企业知识库 <noreply@yourdomain.com>` | 发件人地址（需用已验证域名） |
+| `ADMIN_NOTIFY_EMAIL` | `admin@yourcompany.com` | 接收注册申请通知的管理员邮箱 |
+| `FRONTEND_BASE_URL` | `https://你的前端域名.up.railway.app` | 前端地址（用于拼接密码设置链接，先填占位，第 6 步获取前端域名后更新） |
+| `PASSWORD_TOKEN_EXPIRE_HOURS` | `24` | 密码设置 Token 有效期（小时） |
+
+> ⚠️ **EMAIL_FROM 格式要求**：必须为 `显示名 <邮箱地址>` 格式，邮箱域名必须与 Resend 已验证的域名一致。开发阶段可用 `GeiIt企业知识库 <onboarding@resend.dev>`，但只能发到 Resend 注册邮箱。
+
+**4.5.4 Worker 服务也需配置邮件变量**
+
+Celery Worker 负责异步发送邮件，因此 **Worker 服务的环境变量也必须包含上述所有邮件相关变量**（与 API 服务保持一致）。
+
+**4.5.5 验证邮件发送**
+
+1. 确保后端 API 和 Worker 服务都已部署且环境变量已配置
+2. 访问前端注册页面，提交一个注册申请
+3. 检查 `ADMIN_NOTIFY_EMAIL` 指向的管理员邮箱，应收到"新注册申请通知"邮件
+4. 查看后端日志，确认出现 `邮件任务已提交` 日志且无 SMTP 错误
+
+> ⚠️ **10D 审查提醒（D3-02）**：生产环境 `/metrics` 端点默认无认证，请在监控配置中强制设置 `PROMETHEUS_AUTH_ENABLED=True`，避免指标数据暴露。详见 [监控与日志](#监控与日志) 章节。
+
+#### 4.6 创建超级管理员账号
 
 系统没有默认的管理员账号，部署后需要手动创建第一个超级管理员。超级管理员拥有以下权限：
 - 访问所有用户文档（包括公共库和私人库）
@@ -348,6 +411,60 @@ SELECT id, username, email, is_superuser FROM users WHERE username = 'your_usern
 > ⚠️ **注意**：不推荐直接用 SQL 创建新用户，因为密码需要 bcrypt 哈希。升级已有用户用 SQL 是安全的。
 
 **验证超级管理员**：用管理员账号登录前端，用户名旁会显示"管理员"标签。
+
+#### 4.7 注册审批流程部署说明
+
+GeiIt 企业知识库采用**注册审批制**：用户提交申请 → 管理员审批 → 用户通过邮件链接设置密码 → 账号创建。此流程依赖邮件服务，请先完成 [4.5 配置邮件服务](#45-配置邮件服务resend)。
+
+**4.7.1 流程全链路**
+
+```
+用户提交申请（/auth/register/apply）
+    → 创建 pending 申请记录
+    → 异步发送管理员通知邮件（到 ADMIN_NOTIFY_EMAIL）
+
+管理员登录前端 → 进入审批页面 → 批准/拒绝
+    → 批准：生成密码设置 Token（secrets.token_urlsafe(32)）
+    → 异步发送密码设置邮件（含 Token 链接）给申请人
+    → 拒绝：异步发送拒绝通知邮件给申请人
+
+用户点击邮件链接 → 设置密码（/auth/register/set-password）
+    → 校验 Token（SHA-256 比对 + 24h 过期 + 一次性使用）
+    → 创建 User 账号
+    → 异步发送账号创建确认邮件
+```
+
+**4.7.2 部署必须配置的变量**
+
+| 变量名 | 作用 | 配置位置 |
+|--------|------|----------|
+| `EMAIL_ENABLED` | 必须为 `True` | API + Worker |
+| `ADMIN_NOTIFY_EMAIL` | 接收注册申请通知的管理员邮箱 | API + Worker |
+| `FRONTEND_BASE_URL` | 拼接密码设置链接的前端地址（如 `https://app.example.com`） | API + Worker |
+| `SMTP_PASSWORD` | Resend API Key | API + Worker |
+
+> ⚠️ **FRONTEND_BASE_URL 至关重要**：密码设置链接格式为 `{FRONTEND_BASE_URL}/set-password?token=xxx`。如果此变量配置错误，用户收到的链接将无法打开。
+
+**4.7.3 管理员审批入口**
+
+超级管理员登录前端后，导航栏会显示**"审批管理"**入口，可查看所有注册申请并执行批准/拒绝操作。
+
+**4.7.4 Token 安全机制**
+
+- **生成**：`secrets.token_urlsafe(32)` 生成 43 字符 URL 安全随机串（256 位熵）
+- **存储**：SHA-256 哈希后存数据库，明文 Token 不落库
+- **有效期**：24 小时（`PASSWORD_TOKEN_EXPIRE_HOURS=24` 可调）
+- **一次性**：使用后标记 `password_token_used_at`，不可重复使用
+- **防重复提交**：同一邮箱 1 小时内只能申请一次（Redis 锁）
+
+**4.7.5 降级模式**
+
+如果 `EMAIL_ENABLED=False` 或 `ADMIN_NOTIFY_EMAIL` 未配置：
+- 注册申请记录仍会创建（用户可查询申请状态）
+- 管理员不会收到通知邮件（需主动登录前端查看审批列表）
+- 批准后不会发送密码设置邮件（申请人无法收到链接）
+
+> 💡 **建议**：生产环境务必配置邮件服务，否则审批流程无法自动通知用户。
 
 ---
 
@@ -541,6 +658,10 @@ PORT=8000
 
 # ===== 数据库 =====
 DATABASE_URL=${{Postgres.DATABASE_URL}}
+DB_POOL_SIZE=10
+DB_MAX_OVERFLOW=20
+DB_POOL_RECYCLE=1800
+DB_POOL_TIMEOUT=30
 
 # ===== Redis =====
 REDIS_URL=${{Redis.REDIS_URL}}
@@ -548,6 +669,8 @@ REDIS_URL=${{Redis.REDIS_URL}}
 # ===== Celery =====
 CELERY_BROKER_URL=${{Redis.REDIS_URL}}
 CELERY_RESULT_BACKEND=${{Redis.REDIS_URL}}
+CELERY_TASK_TIMEOUT=600
+CELERY_TASK_MAX_RETRIES=3
 
 # ===== JWT 认证 =====
 SECRET_KEY=<生成的32+字符随机密钥>
@@ -558,6 +681,20 @@ REFRESH_TOKEN_EXPIRE_DAYS=7
 # ===== CORS =====
 CORS_ORIGINS=["https://你的前端域名.up.railway.app"]
 
+# ===== 邮件 SMTP（Resend）=====
+EMAIL_ENABLED=True
+SMTP_HOST=smtp.resend.com
+SMTP_PORT=465
+SMTP_USER=resend
+SMTP_PASSWORD=re_your_resend_api_key
+SMTP_USE_TLS=True
+SMTP_START_TLS=False
+SMTP_TIMEOUT=30
+EMAIL_FROM=GeiIt企业知识库 <noreply@yourdomain.com>
+ADMIN_NOTIFY_EMAIL=admin@yourcompany.com
+FRONTEND_BASE_URL=https://你的前端域名.up.railway.app
+PASSWORD_TOKEN_EXPIRE_HOURS=24
+
 # ===== LLM 配置 =====
 OPENAI_API_KEY=<你的API密钥>
 OPENAI_API_BASE=https://api.openai.com/v1
@@ -565,10 +702,68 @@ LLM_MODEL_NAME=gpt-3.5-turbo
 LLM_FALLBACK_MODEL_NAME=gpt-3.5-turbo
 EMBEDDING_MODEL_NAME=text-embedding-ada-002
 EMBEDDING_DIMENSION=1536
+VISION_MODEL_NAME=gpt-4o-mini
+
+# ===== LLM 容错 =====
+LLM_MAX_RETRIES=3
+LLM_RETRY_BASE_DELAY=1.0
+LLM_TIMEOUT=30
+LLM_STREAM_FIRST_TOKEN_TIMEOUT=5
+CIRCUIT_BREAKER_THRESHOLD=5
+CIRCUIT_BREAKER_RECOVERY_TIME=60
+
+# ===== 向量检索 =====
+SEARCH_TOP_K=4
+SIMILARITY_THRESHOLD=0.5
+ENABLE_HYBRID_SEARCH=True
+KEYWORD_SEARCH_WEIGHT=0.3
+
+# ===== 文档处理 =====
+CHUNK_SIZE=500
+CHUNK_OVERLAP=50
+DOCUMENT_QUALITY_THRESHOLD=60.0
+ENABLE_OCR=True
+ENABLE_VISION=True
+ENABLE_TABLE_EXTRACTION=True
+
+# ===== 限流 =====
+ENABLE_RATE_LIMIT=True
+RATE_LIMIT_GLOBAL_PER_MINUTE=100
+RATE_LIMIT_LOGIN_PER_MINUTE=5
+RATE_LIMIT_ASK_PER_MINUTE=20
+RATE_LIMIT_UPLOAD_PER_HOUR=20
+LOGIN_FAILURE_LOCK_THRESHOLD=5
+LOGIN_FAILURE_LOCK_MINUTES=15
+
+# ===== 缓存 =====
+ENABLE_FAQ_CACHE=True
+FAQ_CACHE_SIMILARITY_THRESHOLD=0.95
+FAQ_CACHE_TTL=604800
+
+# ===== RAG 优化 =====
+ENABLE_INTENT_DETECTION=True
+ENABLE_CONFLICT_DETECTION=True
+ENABLE_LATEX_PROTECTION=True
+CONVERSATION_HISTORY_LIMIT=5
+CONVERSATION_HISTORY_MAX_TOKENS=2000
+ENABLE_HISTORY_SUMMARY=True
+SUMMARY_EVERY_N_TURNS=5
+
+# ===== Prometheus 监控 =====
+ENABLE_PROMETHEUS=True
+PROMETHEUS_METRICS_PATH=/metrics
+PROMETHEUS_AUTH_ENABLED=True
+PROMETHEUS_AUTH_USER=prometheus
+PROMETHEUS_AUTH_PASSWORD=<生成的密码>
+PROMETHEUS_INCLUDE_PATH_LABEL=False
+
+# ===== Sentry（可选）=====
+ENABLE_SENTRY=False
+SENTRY_DSN=
 
 # ===== 运行时 =====
 UVICORN_WORKERS=1
-ENABLE_OCR=True
+REQUEST_LOG_SAMPLE_RATE=1.0
 ```
 
 ### Celery Worker 服务
@@ -592,19 +787,69 @@ CELERY_BROKER_URL=${{Redis.REDIS_URL}}
 CELERY_RESULT_BACKEND=${{Redis.REDIS_URL}}
 CELERY_WORKER_CONCURRENCY=2
 CELERY_MAX_TASKS_PER_CHILD=100
+CELERY_TASK_TIMEOUT=600
+CELERY_TASK_MAX_RETRIES=3
 
 # ===== JWT =====
 SECRET_KEY=<与API服务相同的密钥>
+
+# ===== 邮件 SMTP（Resend）— Worker 发送邮件任务必需 =====
+EMAIL_ENABLED=True
+SMTP_HOST=smtp.resend.com
+SMTP_PORT=465
+SMTP_USER=resend
+SMTP_PASSWORD=re_your_resend_api_key
+SMTP_USE_TLS=True
+SMTP_START_TLS=False
+SMTP_TIMEOUT=30
+EMAIL_FROM=GeiIt企业知识库 <noreply@yourdomain.com>
+ADMIN_NOTIFY_EMAIL=admin@yourcompany.com
+FRONTEND_BASE_URL=https://你的前端域名.up.railway.app
+PASSWORD_TOKEN_EXPIRE_HOURS=24
 
 # ===== LLM 配置 =====
 OPENAI_API_KEY=<与API服务相同的密钥>
 OPENAI_API_BASE=https://api.openai.com/v1
 LLM_MODEL_NAME=gpt-3.5-turbo
+LLM_FALLBACK_MODEL_NAME=gpt-3.5-turbo
 EMBEDDING_MODEL_NAME=text-embedding-ada-002
 EMBEDDING_DIMENSION=1536
+VISION_MODEL_NAME=gpt-4o-mini
 
-# ===== 运行时 =====
+# ===== LLM 容错 =====
+LLM_MAX_RETRIES=3
+LLM_TIMEOUT=30
+LLM_STREAM_FIRST_TOKEN_TIMEOUT=5
+CIRCUIT_BREAKER_THRESHOLD=5
+CIRCUIT_BREAKER_RECOVERY_TIME=60
+
+# ===== 向量检索 =====
+SEARCH_TOP_K=4
+SIMILARITY_THRESHOLD=0.5
+ENABLE_HYBRID_SEARCH=True
+KEYWORD_SEARCH_WEIGHT=0.3
+
+# ===== 文档处理 =====
+CHUNK_SIZE=500
+CHUNK_OVERLAP=50
+DOCUMENT_QUALITY_THRESHOLD=60.0
 ENABLE_OCR=True
+ENABLE_VISION=True
+ENABLE_TABLE_EXTRACTION=True
+
+# ===== RAG 优化 =====
+ENABLE_INTENT_DETECTION=True
+ENABLE_CONFLICT_DETECTION=True
+ENABLE_LATEX_PROTECTION=True
+CONVERSATION_HISTORY_LIMIT=5
+CONVERSATION_HISTORY_MAX_TOKENS=2000
+ENABLE_HISTORY_SUMMARY=True
+SUMMARY_EVERY_N_TURNS=5
+
+# ===== 缓存 =====
+ENABLE_FAQ_CACHE=True
+FAQ_CACHE_SIMILARITY_THRESHOLD=0.95
+FAQ_CACHE_TTL=604800
 ```
 
 ### 前端服务
@@ -652,6 +897,8 @@ Railway 自动收集所有服务的标准输出日志。在 Dashboard 中点击�
 2. 访问 `https://你的后端域名/metrics`（需 Basic Auth）
 3. 将 metrics 端点接入 Grafana / Datadog 等监控系统
 
+> ⚠️ **10D 审查提醒（D3-02）**：`/metrics` 端点默认无认证（`PROMETHEUS_AUTH_ENABLED=False`），**生产环境必须设为 `True`** 并配置 `PROMETHEUS_AUTH_USER` / `PROMETHEUS_AUTH_PASSWORD`，否则指标数据（含请求量、延迟、错误率）将公开暴露。
+
 ### 可选：启用 Sentry 错误监控
 
 1. 注册 [Sentry](https://sentry.io) 账号，获取 DSN
@@ -689,6 +936,16 @@ psql "${DATABASE_URL}" < backup_20260710.sql
 
 Redis 中的数据（Token 黑名单、限流计数、FAQ 缓存）均为临时数据，可通过应用逻辑重建。建议在 Redis 服务设置中启用 AOF 持久化，减少重启后的数据丢失。
 
+> ⚠️ **10D 审查提醒（D7-01）**：项目当前无自动备份脚本。建议创建 `scripts/backup_db.sh` 定时备份脚本，配合 Railway Cron Service 或外部 cron 定时执行 `pg_dump`，确保数据安全。备份脚本示例：
+> ```bash
+> #!/bin/bash
+> # 每日备份，保留 30 天
+> BACKUP_DIR="/app/backups"
+> mkdir -p "$BACKUP_DIR"
+> pg_dump "${DATABASE_URL}" | gzip > "$BACKUP_DIR/backup_$(date +%Y%m%d_%H%M%S).sql.gz"
+> find "$BACKUP_DIR" -name "backup_*.sql.gz" -mtime +30 -delete
+> ```
+
 ---
 
 ## 回滚流程
@@ -725,6 +982,12 @@ alembic history
 
 > ⚠️ **注意**：数据库回滚可能导致数据丢失，仅在必要时使用。回滚前务必备份数据库。
 
+> ⚠️ **10D 审查提醒（D9-02）**：Railway Dashboard 回滚仅回滚代码，**不自动回滚数据库迁移**。完整的回滚 SOP 应为：
+> 1. **先判断**：当前部署是否包含新的 Alembic 迁移？（查看 `alembic history`）
+> 2. **如无新迁移**：直接 Railway Dashboard Redeploy 上一个版本即可
+> 3. **如有新迁移**：先备份数据库 → Railway 回滚代码 → 手动执行 `alembic downgrade -1` → 验证应用启动正常
+> 4. **如 downgrade 失败**（如删列迁移不可逆）：保持当前 schema，修复代码兼容旧 schema 后重新部署
+
 ---
 
 ## 部署检查清单
@@ -738,6 +1001,8 @@ alembic history
 - [ ] **超级管理员账号已创建**（`python -m scripts.create_superuser`）
 - [ ] Celery Worker 服务已部署，日志显示 ready
 - [ ] 前端服务已部署，可正常访问
+- [ ] **邮件服务（Resend）API Key 已配置**，发件域名已验证
+- [ ] **`ADMIN_NOTIFY_EMAIL` 已设置**（接收注册申请通知）
 
 ### 环境变量
 - [ ] `SECRET_KEY` 已设置（≥32 字符，非弱默认值）
@@ -748,6 +1013,10 @@ alembic history
 - [ ] `CORS_ORIGINS` 包含前端域名（非通配符 `*`）
 - [ ] `ENVIRONMENT=production`，`DEBUG=False`
 - [ ] Worker 服务的 `ROLE=worker`
+- [ ] **`EMAIL_ENABLED=True`**，`SMTP_PASSWORD` 已设置（Resend API Key）
+- [ ] **`FRONTEND_BASE_URL` 指向前端域名**（用于密码设置链接拼接）
+- [ ] **`PROMETHEUS_AUTH_ENABLED=True`**（生产环境强制开启 /metrics 认证）
+- [ ] Worker 服务也配置了邮件相关变量（与 API 服务一致）
 
 ### 功能验证
 - [ ] 注册新账号成功
@@ -757,12 +1026,16 @@ alembic history
 - [ ] 问答功能正常（能收到 LLM 回答）
 - [ ] 数据导出功能正常（下载 JSON 文件）
 - [ ] 账号删除功能正常
+- [ ] **注册申请提交后管理员收到通知邮件**
+- [ ] **管理员审批后申请人收到密码设置邮件**
+- [ ] **密码设置链接可正常打开**，设置密码后可登录
 
 ### 安全检查
 - [ ] `DEBUG=False`，访问 `/docs` 返回 404
 - [ ] `CORS_ORIGINS` 不含通配符 `*`
 - [ ] HTTPS 有效（Railway 自动配置）
 - [ ] 生产环境启动校验通过（日志无 "配置校验失败" 错误）
+- [ ] **`/metrics` 端点需 Basic Auth 认证**（未认证访问返回 401）
 
 ---
 
@@ -862,7 +1135,7 @@ python -m scripts.create_superuser \
   --password "YourSecure123"
 ```
 
-详细操作步骤见 [第 4.5 步：创建超级管理员账号](#45-创建超级管理员账号)。
+详细操作步骤见 [第 4.6 步：创建超级管理员账号](#46-创建超级管理员账号)。
 
 ### Q10：如何将已有用户升级为管理员
 
@@ -881,6 +1154,59 @@ python -m scripts.create_superuser \
 # 方式 2：直接 SQL（在 Railway PostgreSQL Query 中）
 UPDATE users SET is_superuser = true WHERE username = 'your_username';
 ```
+
+### Q11：注册申请提交后管理员未收到邮件
+
+**症状**：用户提交注册申请成功，但管理员邮箱未收到通知邮件
+
+**排查**：
+1. 检查 `EMAIL_ENABLED` 是否为 `True`（为 `False` 则跳过邮件发送）
+2. 检查 `ADMIN_NOTIFY_EMAIL` 是否配置为正确的管理员邮箱
+3. 检查 `SMTP_PASSWORD`（Resend API Key）是否有效
+4. 检查 Worker 服务是否正常运行（邮件由 Celery Worker 异步发送）
+5. 查看 Worker 日志是否有 SMTP 错误（如认证失败、连接超时）
+6. 确认 Resend 发件域名是否已验证（未验证域名只能发到 Resend 注册邮箱）
+7. 检查 Resend Dashboard → Logs 是否有发送记录和错误详情
+
+### Q12：密码设置链接打开报"Token 无效或已过期"
+
+**症状**：用户点击邮件中的密码设置链接，页面提示 Token 无效或已过期
+
+**排查**：
+1. **Token 已过期**：密码设置 Token 有效期 24 小时（`PASSWORD_TOKEN_EXPIRE_HOURS=24`），超时需管理员重新审批
+2. **Token 已使用**：密码设置 Token 为一次性使用，已设置过密码的链接不可重复使用
+3. **`FRONTEND_BASE_URL` 配置错误**：检查此变量是否正确指向前端域名，链接格式为 `{FRONTEND_BASE_URL}/set-password?token=xxx`
+4. **前后端域名不匹配**：邮件中的链接域名必须与前端实际部署域名一致
+
+### Q13：Resend 邮件发送失败（日志显示 SMTP 错误）
+
+**症状**：Worker 日志显示 SMTP 连接失败或认证错误
+
+**排查**：
+1. 检查 `SMTP_HOST` 是否为 `smtp.resend.com`
+2. 检查 `SMTP_PORT` 是否为 `465`，`SMTP_USE_TLS=True`，`SMTP_START_TLS=False`
+3. 检查 `SMTP_USER` 是否为 `resend`（固定值，不是邮箱地址）
+4. 检查 `SMTP_PASSWORD` 是否为完整的 Resend API Key（格式 `re_xxxxxxxx`）
+5. 检查 `EMAIL_FROM` 的域名是否已在 Resend 验证
+6. 检查 Resend 免费额度是否用尽（3000 封/月）
+7. 如使用 `onboarding@resend.dev` 发件地址，只能发到 Resend 注册邮箱
+
+### Q14：多副本部署时数据库迁移冲突
+
+**症状**：后端 API 服务配置多副本（replicas > 1）时，部署日志出现 Alembic 迁移冲突错误
+
+**排查**：
+1. `entrypoint.sh` 在每个副本启动时执行 `alembic upgrade head`，多副本并发会导致迁移冲突
+2. **解决方案**：在 `railway.json` 中配置 `releaseCommand` 替代 entrypoint.sh 迁移：
+   ```json
+   "deploy": {
+     "releaseCommand": "alembic upgrade head",
+     "releaseCommandTimeoutSecs": 60,
+     "startCommand": "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+   }
+   ```
+3. 同时修改 `entrypoint.sh`，移除迁移步骤（仅保留 uvicorn 启动）
+4. 详见 [10D 审查报告 D9-01](#) 和 [第 4.3 步](#43-确认部署配置)的提醒
 
 ---
 
@@ -920,10 +1246,13 @@ kb_qa_system/
 │   └── package.json           # Node 依赖
 │
 └── docs/                      # 文档
-    ├── RAILWAY_DEPLOYMENT_GUIDE.md  # 本文件
-    ├── COMPREHENSIVE_REVIEW_8D.md   # 八维度代码审查报告
-    ├── P0_FIX_REPORT.md             # P0 修复报告
-    └── PHASE_E_REPAIR_REPORT.md     # Phase E 修复报告
+    ├── RAILWAY_DEPLOYMENT_GUIDE.md   # 本文件（Railway 部署指南）
+    ├── LOCAL_DEPLOYMENT_GUIDE.md     # 本地部署指南
+    ├── COMPREHENSIVE_REVIEW_10D.md   # 十维度代码审查报告（最新）
+    ├── COMPREHENSIVE_REVIEW_8D.md    # 八维度代码审查报告
+    ├── EMAIL_SYSTEM_REVIEW.md        # 邮件系统安全审查
+    ├── P0_FIX_REPORT.md              # P0 修复报告
+    └── PHASE_E_REPAIR_REPORT.md      # Phase E 修复报告
 ```
 
 ---
@@ -939,4 +1268,4 @@ kb_qa_system/
 
 ---
 
-*本指南最后更新：2026-07-10 | GeiIt企业知识库 v1.0.0*
+*本指南最后更新：2026-07-11 | GeiIt企业知识库 v1.0.0*
