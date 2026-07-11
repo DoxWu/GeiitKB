@@ -34,6 +34,7 @@ from app.core.prometheus_metrics import (
     http_requests_total,
     http_request_duration_seconds,
     http_requests_in_progress,
+    record_db_pool_metrics,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,9 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
 
         # 记录在途请求数 +1
         http_requests_in_progress.inc()
+
+        # E2-02: 采集数据库连接池指标（每个请求采样一次）
+        record_db_pool_metrics()
 
         # 记录请求开始时间
         start_time = time.time()

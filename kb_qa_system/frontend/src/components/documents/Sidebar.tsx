@@ -22,8 +22,9 @@ import {
   MessageSquare,
   Settings,
   ChevronLeft,
+  HelpCircle,
 } from "lucide-react";
-import { Button } from "@/components/common";
+import { Button, ThemeToggle } from "@/components/common";
 import { FolderItem } from "./FolderItem";
 import { CreateFolderModal } from "./CreateFolderModal";
 import { useDocumentStore } from "@/store/documentStore";
@@ -103,6 +104,18 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
             <MessageSquare className="h-3.5 w-3.5" />
             问答
           </button>
+          {/* D10-02 帮助文档链接 */}
+          <button
+            onClick={() => navigate("/help")}
+            className={cn(
+              "flex items-center justify-center rounded-md px-2 py-1.5 text-xs font-medium",
+              "text-ink-secondary transition-colors hover:bg-muted hover:text-ink",
+            )}
+            aria-label="帮助"
+            title="帮助中心"
+          >
+            <HelpCircle className="h-3.5 w-3.5" />
+          </button>
         </div>
 
         {/* 分支列表区 */}
@@ -170,6 +183,8 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
                 {user?.email}
               </p>
             </div>
+            {/* D5-04 暗色模式切换 */}
+            <ThemeToggle />
             <button
               onClick={() => navigate("/settings")}
               className="rounded p-1.5 text-ink-tertiary transition-colors hover:bg-muted hover:text-ink"

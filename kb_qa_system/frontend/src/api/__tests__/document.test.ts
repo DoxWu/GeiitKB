@@ -5,7 +5,7 @@
  *   - getDocuments：查询参数构建（含 Bug-1 folder_id 验证）
  *   - getDocumentDetail：路径参数
  *   - deleteDocument：DELETE 请求
- *   - getFolders / createFolder / updateFolder / deleteFolder：Mock 实现
+ *   - getFolders / createFolder / updateFolder / deleteFolder：API 调用验证
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -273,44 +273,65 @@ describe("getTaskStatus", () => {
   });
 });
 
-describe("Folders Mock 实现", () => {
+describe("Folders API 调用", () => {
   beforeEach(() => {
-    localStorage.clear();
+    vi.clearAllMocks();
   });
 
-  it("getFolders - 首次调用返回默认分支", async () => {
+  it("getFolders - 调用 GET /documents/folders 并返回分支列表", async () => {
+    const mockResponse = {
+      items: [
+        { id: 1, name: "默认分支", document_count: 5 },
+        { id: 2, name: "技术文档", document_count: 3 },
+      ],
+      total: 2,
+    };
+    mockApiClient.get.mockResolvedValueOnce(mockResponse);
+
     const result = await getFolders();
-    expect(result.items.length).toBeGreaterThanOrEqual(1);
-    expect(result.items[0].name).toBeTruthy();
+
+    expect(mockApiClient.get).toHaveBeenCalledOnce();
+    expect(mockApiClient.get).toHaveBeenCalledWith("/documents/folders");
+    expect(result.items).toHaveLength(2);
+    expect(result.items[0].name).toBe("默认分支");
+    expect(result.total).toBe(2);
   });
 
-  it("createFolder - 创建新分支后出现在列表中", async () => {
-    await getFolders();
+  it("createFolder - 调用 POST /documents/folders 并返回新建分支", async () => {
+    const mockFolder = { id: 10, name: "测试分支", document_count: 0 };
+    mockApiClient.post.mockResolvedValueOnce(mockFolder);
+
     const created = await createFolder({ name: "测试分支" });
+
+    expect(mockApiClient.post).toHaveBeenCalledOnce();
+    expect(mockApiClient.post).toHaveBeenCalledWith("/documents/folders", {
+      name: "测试分支",
+    });
     expect(created.name).toBe("测试分支");
-
-    const result = await getFolders();
-    const found = result.items.find((f) => f.name === "测试分支");
-    expect(found).toBeTruthy();
+    expect(created.id).toBe(10);
   });
 
-  it("updateFolder - 重命名分支", async () => {
-    await getFolders();
-    const created = await createFolder({ name: "原名称" });
-    await updateFolder(created.id, { name: "新名称" });
+  it("updateFolder - 调用 PATCH /documents/folders/{id} 并返回更新后的分支", async () => {
+    const mockFolder = { id: 5, name: "新名称", document_count: 2 };
+    mockApiClient.patch.mockResolvedValueOnce(mockFolder);
 
-    const result = await getFolders();
-    const updated = result.items.find((f) => f.id === created.id);
-    expect(updated?.name).toBe("新名称");
+    const updated = await updateFolder(5, { name: "新名称" });
+
+    expect(mockApiClient.patch).toHaveBeenCalledOnce();
+    expect(mockApiClient.patch).toHaveBeenCalledWith(
+      "/documents/folders/5",
+      { name: "新名称" },
+    );
+    expect(updated.name).toBe("新名称");
+    expect(updated.id).toBe(5);
   });
 
-  it("deleteFolder - 删除分支后不再出现", async () => {
-    await getFolders();
-    const created = await createFolder({ name: "待删除" });
-    await deleteFolder(created.id);
+  it("deleteFolder - 调用 DELETE /documents/folders/{id}", async () => {
+    mockApiClient.delete.mockResolvedValueOnce(undefined);
 
-    const result = await getFolders();
-    const found = result.items.find((f) => f.id === created.id);
-    expect(found).toBeUndefined();
+    await deleteFolder(3);
+
+    expect(mockApiClient.delete).toHaveBeenCalledOnce();
+    expect(mockApiClient.delete).toHaveBeenCalledWith("/documents/folders/3");
   });
 });

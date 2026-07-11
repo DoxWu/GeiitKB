@@ -21,6 +21,13 @@ global:
 rule_files:
   - "alerts.yml"
 
+# 告警发送目标（D8-01 Alertmanager）
+# 作用：Prometheus 触发 alerts.yml 中的告警规则后，将告警发送到此目标
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
 # 抓取目标
 scrape_configs:
   # --------------------------------------------

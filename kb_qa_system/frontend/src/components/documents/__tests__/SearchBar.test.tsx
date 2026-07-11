@@ -19,6 +19,10 @@ const { mockDocStore } = vi.hoisted(() => ({
     searchKeyword: "",
     setSearchKeyword: vi.fn(),
     loadDocuments: vi.fn(),
+    // D2-03 搜索历史（Task #143 新增）
+    searchHistory: [] as string[],
+    addSearchHistory: vi.fn(),
+    clearSearchHistory: vi.fn(),
   },
 }));
 

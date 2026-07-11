@@ -31,6 +31,8 @@ from app.api.routes.documents import router as documents_router
 from app.api.routes.chat import router as chat_router
 from app.api.routes.stats import router as stats_router
 from app.api.routes.metrics import router as metrics_router
+from app.api.routes.folders import router as folders_router
+from app.api.ws_notifications import router as ws_notifications_router
 
 
 # ============================================
@@ -138,6 +140,40 @@ async def lifespan(app: FastAPI):
             f"请修复以上配置问题后重试。"
         )
     logger.info("✅ 配置校验通过")
+
+    # 0.5. Sentry SDK 初始化（D6-01）
+    # 作用：生产环境错误监控，自动捕获未处理异常和 Celery 任务失败
+    # PII 过滤：before_send 回调移除 Authorization/Cookie 等敏感头
+    if settings.ENABLE_SENTRY and settings.SENTRY_DSN:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        from sentry_sdk.integrations.celery import CeleryIntegration
+        from sentry_sdk.integrations.redis import RedisIntegration
+
+        def _filter_pii(event, hint):
+            """过滤 PII（个人身份信息），移除敏感请求头"""
+            if "request" in event and "headers" in event["request"]:
+                event["request"]["headers"] = {
+                    k: v for k, v in event["request"]["headers"].items()
+                    if k.lower() not in ("authorization", "cookie")
+                }
+            return event
+
+        sentry_sdk.init(
+            dsn=settings.SENTRY_DSN,
+            environment=settings.ENVIRONMENT,
+            traces_sample_rate=0.1,
+            send_default_pii=False,
+            integrations=[
+                FastApiIntegration(),
+                CeleryIntegration(),
+                RedisIntegration(),
+            ],
+            before_send=_filter_pii,
+        )
+        logger.info("✅ Sentry 错误监控已启用")
+    else:
+        logger.info("ℹ️ Sentry 未配置（ENABLE_SENTRY=False 或 SENTRY_DSN 为空）")
 
     # 1. 数据库 schema 管理
     # C-11 修复：移除 Base.metadata.create_all，完全依赖 Alembic 迁移
@@ -282,6 +318,15 @@ app.add_middleware(
 )
 
 # ============================================
+# 请求 ID 中间件（D8-02）
+# ============================================
+
+# 作用：为每个请求生成/传递 X-Request-ID，注入 structlog contextvars，
+#       实现全链路请求追踪。CORS 已 expose X-Request-ID，客户端可读取。
+from app.middleware.request_id_middleware import RequestIDMiddleware
+app.add_middleware(RequestIDMiddleware)
+
+# ============================================
 # Prometheus 监控中间件
 # ============================================
 
@@ -289,6 +334,12 @@ app.add_middleware(
 # Prometheus 关闭时中间件内部直接放行，零开销
 from app.middleware.prometheus_middleware import PrometheusMiddleware
 app.add_middleware(PrometheusMiddleware)
+
+# E1-03: 统一限流中间件
+# 作用：对未配置路由级限流的 API 端点应用默认限流（60次/分钟/用户或IP）
+# 已配置路由级限流的端点通过 exclude_paths 自动跳过，避免重复限流
+from app.middleware.rate_limit_middleware import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware)
 
 
 # ============================================
@@ -303,10 +354,14 @@ app.add_middleware(PrometheusMiddleware)
 app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
 app.include_router(registration_router, prefix=settings.API_V1_PREFIX)
 app.include_router(documents_router, prefix=settings.API_V1_PREFIX)
+app.include_router(folders_router, prefix=settings.API_V1_PREFIX)
 app.include_router(chat_router, prefix=settings.API_V1_PREFIX)
 app.include_router(stats_router, prefix=settings.API_V1_PREFIX)
 # metrics 路由不加 API_V1_PREFIX，放在根路径（/metrics）
 app.include_router(metrics_router)
+# E1-04: WebSocket 通知端点，不加 API_V1_PREFIX，放在根路径（/ws/notifications）
+# 作用：实时推送审批结果、文档处理完成等通知，基于 Redis Pub/Sub 跨实例分发
+app.include_router(ws_notifications_router)
 
 
 # ============================================
@@ -403,6 +458,54 @@ async def root():
         response["docs"] = "/docs"
         response["redoc"] = "/redoc"
     return response
+
+
+# ============================================
+# CSP 违规报告端点（E4-03）
+# ============================================
+
+@app.post("/api/csp-report", tags=["系统"])
+async def csp_report(request: Request):
+    """
+    CSP 违规报告接收端点
+
+    作用：
+        接收浏览器发送的 Content-Security-Policy 违规报告。
+        nginx 配置 report-uri /api/csp-report，浏览器在检测到 CSP
+        违规时会自动 POST 报告到此端点。
+
+    实现方式：
+        - 解析 report-only 或 enforce 模式的 CSP 报告
+        - 记录到结构化日志（structlog），便于后续分析
+        - 返回 204 No Content（浏览器期望的响应）
+
+    安全考虑：
+        - 此端点无需认证（浏览器自动发送）
+        - 不存储报告到数据库（避免注入和存储膨胀）
+        - 限制请求体大小（nginx 层面已限制）
+    """
+    try:
+        body = await request.body()
+        # 解析 CSP 报告 JSON
+        import json
+        report_data = json.loads(body) if body else {}
+        csp_report = report_data.get("csp-report", report_data)
+
+        # 记录到结构化日志，便于后续聚合分析
+        logger.warning(
+            "CSP 违规报告",
+            document_uri=csp_report.get("document-uri", ""),
+            violated_directive=csp_report.get("violated-directive", ""),
+            blocked_uri=csp_report.get("blocked-uri", ""),
+            source_file=csp_report.get("source-file", ""),
+            line_number=csp_report.get("line-number", 0),
+            referrer=csp_report.get("referrer", ""),
+        )
+    except Exception as e:
+        # 解析失败不阻塞响应，仅记录警告
+        logger.debug(f"CSP 报告解析失败: {type(e).__name__}")
+
+    return JSONResponse(status_code=204, content=None)
 
 
 # ============================================

@@ -7,18 +7,22 @@
 from app.models.user import User
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
+from app.models.document_folder import DocumentFolder
 from app.models.conversation import Conversation, Message
 from app.models.qa_event import QAEvent
 from app.models.registration import RegistrationApplication
 from app.models.email_log import EmailLog
+from app.models.audit_log import AuditLog
 
 __all__ = [
     "User",
     "Document",
     "DocumentChunk",
+    "DocumentFolder",
     "Conversation",
     "Message",
     "QAEvent",
     "RegistrationApplication",
     "EmailLog",
+    "AuditLog",
 ]

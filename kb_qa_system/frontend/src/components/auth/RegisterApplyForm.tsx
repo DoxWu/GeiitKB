@@ -19,6 +19,7 @@ import { Button, Input } from "@/components/common";
 import { useToastStore } from "@/store/toastStore";
 import { submitRegisterApply } from "@/api/auth";
 import { isValidEmail, validateUsername } from "@/utils/validate";
+import { useUnsavedChanges } from "@/hooks/useUnsavedChanges";
 
 /** RegisterApplyForm 组件属性 */
 interface RegisterApplyFormProps {
@@ -41,6 +42,10 @@ export function RegisterApplyForm({ onSuccess }: RegisterApplyFormProps) {
   const [username, setUsername] = useState("");
   const [errors, setErrors] = useState<FormErrors>({});
   const [loading, setLoading] = useState(false);
+
+  // E5-03: 表单未保存提示 — 任一字段有值时视为 dirty
+  const isDirty = email !== "" || confirmEmail !== "" || username !== "";
+  useUnsavedChanges(isDirty, "您有未保存的注册申请数据，确定要离开吗？");
 
   /** 校验表单 */
   function validate(): boolean {

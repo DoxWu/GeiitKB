@@ -128,6 +128,10 @@ class DocumentListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+    # D4-02 游标分页：传入 cursor 参数时返回 next_cursor，旧客户端可忽略此字段
+    next_cursor: Optional[int] = Field(
+        None, description="下一页游标（传入 cursor 参数时返回，无更多数据时为 null）"
+    )
 
 
 # ============================================

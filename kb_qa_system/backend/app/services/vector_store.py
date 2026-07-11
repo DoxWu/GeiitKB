@@ -324,6 +324,11 @@ class VectorStoreService:
         # 2. 构建SQL查询
         db: Session = SessionLocal()
         try:
+            # D4-04 IVFFlat probes 调优：设置检索时扫描的聚类数量
+            # 作用：probes 越大召回率越高但速度越慢，默认 10 适合中小规模数据
+            # 注意：SET LOCAL 仅在当前事务内有效，不影响其他连接
+            db.execute(text("SET LOCAL ivfflat.probes = :probes"), {"probes": settings.IVFFLAT_PROBES})
+
             # 使用 pgvector 的 <=> 操作符（余弦距离）
             # distance 范围 [0, 2]，0 表示完全相同
             # similarity = 1 - distance

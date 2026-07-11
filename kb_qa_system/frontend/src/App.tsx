@@ -17,7 +17,7 @@
  */
 
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
-import { ToastContainer, ErrorBoundary } from "@/components/common";
+import { ToastContainer, ErrorBoundary, OfflineIndicator } from "@/components/common";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { PublicRoute } from "@/components/auth/PublicRoute";
 import { AdminRoute } from "@/components/auth/AdminRoute";
@@ -30,8 +30,10 @@ import SettingsPage from "@/pages/SettingsPage";
 import AdminApplicationsPage from "@/pages/AdminApplicationsPage";
 import PrivacyPage from "@/pages/PrivacyPage";
 import TermsPage from "@/pages/TermsPage";
+import HelpPage from "@/pages/HelpPage";
 import NotFoundPage from "@/pages/NotFoundPage";
 import { useAuthStore } from "@/store/authStore";
+import { useNotification } from "@/hooks/useNotification";
 
 /** 登录页重定向组件（已登录用户访问 /login 时重定向至 /documents） */
 function LoginRoute() {
@@ -45,9 +47,14 @@ function LoginRoute() {
 
 /** App 根组件 */
 export default function App() {
+  // E1-04: WebSocket 实时通知（全局生效，仅认证用户建立连接）
+  useNotification();
+
   return (
     <ErrorBoundary>
       <Router>
+        {/* E5-02: 离线状态提示（全局生效） */}
+        <OfflineIndicator />
         <Routes>
           {/* 根路径重定向至文档管理页 */}
           <Route path="/" element={<Navigate to="/documents" replace />} />
@@ -74,6 +81,8 @@ export default function App() {
           <Route path="/privacy" element={<PrivacyPage />} />
           {/* 用户协议页面（公开访问，无需登录） */}
           <Route path="/terms" element={<TermsPage />} />
+          {/* 帮助文档页面（D10-02，公开访问，无需登录） */}
+          <Route path="/help" element={<HelpPage />} />
 
           {/* 受保护页面 */}
           <Route

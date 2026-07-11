@@ -6,6 +6,7 @@
   },
   "deploy": {
     "startCommand": "/app/entrypoint.sh",
+    "releaseCommand": "alembic upgrade head",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 60,
     "restartPolicyType": "ON_FAILURE",

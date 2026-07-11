@@ -2,8 +2,12 @@
 # Grafana 数据源自动配置
 # ============================================
 # 作用：
-#     Grafana 启动时自动创建 Prometheus 数据源，无需手动在 UI 配置。
+#     Grafana 启动时自动创建数据源（Prometheus + Loki），无需手动在 UI 配置。
 #     通过 provisioning 机制实现基础设施即代码（IaC）。
+#
+# 数据源：
+#     - Prometheus：指标数据（HTTP 请求数、延迟、DB 连接池等）
+#     - Loki：日志数据（E6-01，容器日志聚合，支持 LogQL 查询）
 #
 # 实现方式：
 #     Grafana 启动时扫描此目录的 YAML 文件，按 apiVersion/kind 解析并创建数据源。
@@ -15,7 +19,7 @@ apiVersion: 1
 # 数据源列表
 datasources:
   # --------------------------------------------
-  # Prometheus 数据源
+  # Prometheus 指标数据源
   # --------------------------------------------
   - name: Prometheus  # 数据源名称（在 Grafana 面板中选择数据源时显示）
     type: prometheus  # 数据源类型（Prometheus）
@@ -31,3 +35,24 @@ datasources:
     version: 1
     # 唯一标识（uid），面板 JSON 通过此 uid 引用数据源
     uid: prometheus
+
+  # --------------------------------------------
+  # Loki 日志数据源（E6-01）
+  # --------------------------------------------
+  # 作用：在 Grafana 中查询 Loki 聚合的容器日志，与指标面板组合使用
+  # 查询语言：LogQL（类似 PromQL，支持标签过滤、正则匹配、聚合统计）
+  # 使用场景：
+  #   - 排查请求错误：查看 error 级别日志，定位异常堆栈
+  #   - 关联分析：指标面板显示延迟飙升 → 日志面板查看同时段 ERROR 日志
+  #   - 审计追踪：按 container_name 过滤查看特定服务日志
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100  # Loki 服务地址（使用 Docker 服务名）
+    isDefault: false
+    editable: true
+    jsonData:
+      # 最大查询返回行数（防止一次查询拉取过多日志导致浏览器卡顿）
+      maxLines: 1000
+    version: 1
+    uid: loki

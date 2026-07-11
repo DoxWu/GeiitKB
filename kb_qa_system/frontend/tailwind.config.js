@@ -9,19 +9,21 @@ export default {
     },
     extend: {
       colors: {
-        canvas: "#FAFAF9",
-        surface: "#FFFFFF",
-        muted: "#F5F5F4",
-        line: "#E5E5E4",
+        // D5-04 暗色模式：使用 CSS 变量，在 index.css 中定义 :root 和 .dark 的值
+        // 格式 rgb(var(--x) / <alpha-value>) 支持 bg-surface/95 等透明度修饰符
+        canvas: "rgb(var(--color-canvas-rgb) / <alpha-value>)",
+        surface: "rgb(var(--color-surface-rgb) / <alpha-value>)",
+        muted: "rgb(var(--color-muted-rgb) / <alpha-value>)",
+        line: "rgb(var(--color-line-rgb) / <alpha-value>)",
         ink: {
-          DEFAULT: "#1A1A1A",
-          secondary: "#71717A",
-          tertiary: "#A1A1AA",
+          DEFAULT: "rgb(var(--color-ink-rgb) / <alpha-value>)",
+          secondary: "rgb(var(--color-ink-secondary-rgb) / <alpha-value>)",
+          tertiary: "rgb(var(--color-ink-tertiary-rgb) / <alpha-value>)",
         },
         brand: {
           DEFAULT: "#D97757",
           hover: "#C26547",
-          light: "#F4E8E1",
+          light: "rgb(var(--color-brand-light-rgb) / <alpha-value>)",
         },
         success: "#16A34A",
         warning: "#D97706",

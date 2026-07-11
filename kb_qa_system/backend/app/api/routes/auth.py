@@ -58,6 +58,7 @@ from app.schemas.user import (
     RefreshTokenResponse,
     AccountDeleteRequest,
 )
+from app.services.audit_service import audit_service
 
 # 模块日志器
 # 作用：记录 Token 刷新锁异常等关键事件
@@ -674,6 +675,19 @@ async def delete_account(
     # 作用：User 模型配置了 cascade="all, delete-orphan"，
     #       db.delete(user) 会级联删除 documents/document_chunks/conversations/messages
     #       QAEvent.user_id 外键为 SET NULL，保留匿名化统计数据用于系统分析
+
+    # D10-01 审计日志：在删除用户前记录审计（删除后 user_id 将被 SET NULL）
+    # 作用：账号删除是敏感操作，需留痕便于合规审计
+    audit_service.log(
+        db=db,
+        user_id=current_user.id,
+        action="account.delete",
+        resource_type="user",
+        resource_id=current_user.id,
+        detail={"username": current_user.username, "email": current_user.email},
+        request=request,
+    )
+
     try:
         db.delete(current_user)
         db.commit()

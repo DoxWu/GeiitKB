@@ -24,7 +24,7 @@
     管理员拒绝(rejected) → 拒绝通知邮件
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from typing import Any, Optional
@@ -55,6 +55,7 @@ from app.schemas.registration import (
 )
 from app.services.email_service import render_email, get_email_subject
 from app.tasks.email_tasks import send_email_task
+from app.services.audit_service import audit_service
 
 # 模块日志器
 logger = logging.getLogger(__name__)
@@ -442,6 +443,7 @@ def list_applications(
     status_code=status.HTTP_200_OK,
 )
 def approve_application(
+    request: Request,
     body: ApproveRequest,
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_superuser),
@@ -521,6 +523,17 @@ def approve_application(
         f"注册申请已批准（application_id={application.id}, admin={admin.username}）"
     )
 
+    # D10-01 审计日志：记录审批操作
+    audit_service.log(
+        db=db,
+        user_id=admin.id,
+        action="application.approve",
+        resource_type="application",
+        resource_id=application.id,
+        detail={"email": application.email, "username": application.username},
+        request=request,
+    )
+
     # 拼接密码设置链接
     # 作用：前端 /set-password 页面读取 query 参数 token
     setup_url = f"{settings.FRONTEND_BASE_URL}/set-password?token={plain_token}"
@@ -556,6 +569,7 @@ def approve_application(
     status_code=status.HTTP_200_OK,
 )
 def reject_application(
+    request: Request,
     body: RejectRequest,
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_superuser),
@@ -620,6 +634,21 @@ def reject_application(
 
     logger.info(
         f"注册申请已拒绝（application_id={application.id}, admin={admin.username}, reason={body.reject_reason}）"
+    )
+
+    # D10-01 审计日志：记录拒绝操作
+    audit_service.log(
+        db=db,
+        user_id=admin.id,
+        action="application.reject",
+        resource_type="application",
+        resource_id=application.id,
+        detail={
+            "email": application.email,
+            "username": application.username,
+            "reject_reason": body.reject_reason,
+        },
+        request=request,
     )
 
     # 异步发送拒绝通知邮件

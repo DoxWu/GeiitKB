@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tsconfigPaths from "vite-tsconfig-paths";
+import { visualizer } from "rollup-plugin-visualizer";
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -35,6 +36,20 @@ export default defineConfig({
         ],
       },
     }),
-    tsconfigPaths()
+    tsconfigPaths(),
+    // E2-01: Bundle 体积分析工具
+    // 使用方式：ANALYZE=true npm run build
+    // 生成 stats.html 可视化报告，识别体积瓶颈
+    ...(process.env.ANALYZE
+      ? [
+          visualizer({
+            filename: "stats.html",
+            open: true,
+            gzipSize: true,
+            brotliSize: true,
+            template: "treemap",
+          }),
+        ]
+      : []),
   ],
 })

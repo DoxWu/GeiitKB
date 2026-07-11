@@ -212,3 +212,7 @@ class ConversationListResponse(BaseModel):
     # M-7 修复：新增分页字段，支持前端分页加载
     page: int = Field(default=1, description="当前页码")
     page_size: int = Field(default=20, description="每页数量")
+    # D4-02 游标分页：传入 cursor 参数时返回 next_cursor，旧客户端可忽略此字段
+    next_cursor: Optional[int] = Field(
+        None, description="下一页游标（传入 cursor 参数时返回，无更多数据时为 null）"
+    )

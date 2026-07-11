@@ -1,0 +1,70 @@
+# ============================================
+# Alertmanager 配置文件（D8-01 告警通知）
+# ============================================
+# 作用：
+#     接收 Prometheus 触发的告警，通过邮件通知管理员。
+#     复用项目 Resend SMTP 配置发送告警邮件。
+#
+# 使用方式：
+#     由 docker-compose.monitoring.yml 挂载到 Alertmanager 容器
+#     SMTP 配置通过环境变量传入（见 docker-compose.monitoring.yml）
+#
+# 告警流程：
+#     Prometheus 检测异常 → 触发告警规则(alerts.yml) →
+#     发送到 Alertmanager → 按路由规则分组 → 邮件通知管理员
+# ============================================
+
+global:
+  # 告警解决等待时间（在这段时间内未收到新告警则标记为已解决）
+  resolve_timeout: 5m
+
+# 告警路由规则
+route:
+  # 按 alertname 和 severity 分组
+  group_by: ['alertname', 'severity']
+  # 首次告警等待时间（收集同组告警一起发送）
+  group_wait: 30s
+  # 同组告警发送间隔
+  group_interval: 5m
+  # 重复告警发送间隔（已发送过的告警再次发送的最短间隔）
+  repeat_interval: 4h
+  # 默认接收器
+  receiver: 'default'
+
+# 告警接收器配置
+receivers:
+  - name: 'default'
+    # 邮件通知配置
+    # 作用：将告警通过邮件发送给管理员
+    # SMTP 配置由环境变量注入（见 docker-compose.monitoring.yml）
+    email_configs:
+      - to: '${ALERT_EMAIL_TO:admin@example.com}'
+        from: '${ALERT_EMAIL_FROM:GeiIt企业知识库 <onboarding@resend.dev>}'
+        smarthost: '${SMTP_HOST:smtp.resend.com}:${SMTP_PORT:465}'
+        auth_username: '${SMTP_USER:resend}'
+        auth_password: '${SMTP_PASSWORD:}'
+        # Resend 使用 SSL（端口 465），不需要 STARTTLS
+        require_tls: false
+        # 邮件主题模板
+        headers:
+          subject: '{{ .GroupLabels.alertname }} - GeiIt企业知识库告警'
+        # 邮件正文模板
+        text: |
+          {{ range .Alerts }}
+          告警: {{ .Labels.alertname }}
+          级别: {{ .Labels.severity }}
+          状态: {{ .Status }}
+          描述: {{ .Annotations.description }}
+          详情: {{ .Annotations.summary }}
+          触发时间: {{ .StartsAt.Format "2006-01-02 15:04:05" }}
+          {{ if .EndsAt }}恢复时间: {{ .EndsAt.Format "2006-01-02 15:04:05" }}{{ end }}
+          {{ end }}
+
+# 抑制规则：当 critical 级别告警触发时，抑制同名的 warning 级别告警
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    # 同名告警才抑制
+    equal: ['alertname']

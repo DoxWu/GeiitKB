@@ -37,6 +37,7 @@ const MAX_ROWS = 6;
 /** ChatInput 组件 */
 export function ChatInput({ streaming, onSend, onStop }: ChatInputProps) {
   const [value, setValue] = useState("");
+  const [isComposing, setIsComposing] = useState(false); // D5-01 IME 输入法组合状态
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   /** 自适应高度：根据内容调整 textarea 行数 */
@@ -67,7 +68,8 @@ export function ChatInput({ streaming, onSend, onStop }: ChatInputProps) {
 
   /** 键盘事件：Enter 发送，Shift+Enter 换行 */
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    // D5-01 IME 输入法组合期间（如中文拼音输入），Enter 用于选词，不触发发送
+    if (e.key === "Enter" && !e.shiftKey && !isComposing) {
       e.preventDefault();
       handleSend();
     }
@@ -101,6 +103,8 @@ export function ChatInput({ streaming, onSend, onStop }: ChatInputProps) {
                 setValue(e.target.value);
               }
             }}
+            onCompositionStart={() => setIsComposing(true)}
+            onCompositionEnd={() => setIsComposing(false)}
             onKeyDown={handleKeyDown}
             placeholder="输入您的问题..."
             disabled={streaming}

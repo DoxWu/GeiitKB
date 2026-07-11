@@ -305,11 +305,16 @@ function UploadProgressList({
           {file.status === "uploading" && (
             <button
               onClick={() => onCancel(file.name)}
-              className="rounded p-1 text-ink-tertiary transition-colors hover:bg-muted hover:text-danger"
+              className={cn(
+                "flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center",
+                "rounded text-ink-tertiary transition-colors",
+                "hover:bg-muted hover:text-danger",
+                "touch-manipulation",
+              )}
               aria-label={`取消上传 ${file.name}`}
               title="取消上传"
             >
-              <X className="h-3.5 w-3.5" />
+              <X className="h-4 w-4" />
             </button>
           )}
         </div>

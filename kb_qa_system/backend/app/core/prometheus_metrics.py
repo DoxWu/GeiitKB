@@ -231,6 +231,120 @@ app_info = Info(
 )
 
 
+# ============================================
+# 数据库连接池指标（E2-02）
+# ============================================
+
+# 连接池大小
+# 作用：监控连接池配置的总量，用于容量规划
+db_pool_size = Gauge(
+    "db_pool_size",
+    "Database connection pool size (configured)",
+)
+
+# 已检出连接数
+# 作用：监控当前正在使用的连接数，使用率 > 80% 时应告警
+db_pool_checked_out = Gauge(
+    "db_pool_checked_out",
+    "Database connections currently checked out from pool",
+)
+
+# 溢出连接数
+# 作用：监控超过 pool_size 的临时连接数，持续溢出说明 pool_size 需调大
+db_pool_overflow = Gauge(
+    "db_pool_overflow",
+    "Database overflow connections (beyond pool_size)",
+)
+
+
+def record_db_pool_metrics() -> None:
+    """
+    采集数据库连接池指标
+
+    作用：
+        从 SQLAlchemy engine.pool 获取连接池状态并更新 Gauge 指标。
+        建议在 Prometheus 中间件或定时任务中定期调用。
+
+    实现方式：
+        - 通过 engine.pool.status() 获取连接池状态字符串
+        - 解析状态字符串提取 checked_out 和 overflow 数量
+        - pool_size 从配置读取
+    """
+    if not is_prometheus_enabled():
+        return
+
+    try:
+        from app.core.database import engine
+        pool = engine.pool
+        # SQLAlchemy QueuePool 的 status() 返回格式：
+        # "Pool size: 10  Connections in pool: 3  Current Overflow: 2  Current Checked out connections: 5"
+        status = pool.status()
+        # 解析 checked out 和 overflow
+        import re
+        checked_match = re.search(r"Checked out connections:\s*(\d+)", status)
+        overflow_match = re.search(r"Current Overflow:\s*(-?\d+)", status)
+
+        checked_out = int(checked_match.group(1)) if checked_match else 0
+        overflow = max(0, int(overflow_match.group(1))) if overflow_match else 0
+
+        db_pool_size.set(pool.size())
+        db_pool_checked_out.set(checked_out)
+        db_pool_overflow.set(overflow)
+    except Exception as e:
+        logger.debug(f"数据库连接池指标采集异常: {e}")
+
+
+# ============================================
+# Redis 缓存命中率指标（E2-03）
+# ============================================
+
+# Redis 缓存命中次数
+# 作用：统计缓存命中量，配合 miss 指标计算命中率
+redis_cache_hits_total = Counter(
+    "redis_cache_hits_total",
+    "Total Redis cache hits",
+)
+
+# Redis 缓存未命中次数
+# 作用：统计缓存未命中量，命中率低说明缓存策略需优化
+redis_cache_misses_total = Counter(
+    "redis_cache_misses_total",
+    "Total Redis cache misses",
+)
+
+
+def record_cache_hit() -> None:
+    """
+    记录缓存命中
+
+    作用：
+        在 RedisManager.get() 成功获取缓存时调用，
+        统计缓存命中率以评估缓存策略效果。
+    """
+    if not is_prometheus_enabled():
+        return
+    try:
+        redis_cache_hits_total.inc()
+    except Exception as e:
+        logger.debug(f"Redis 缓存命中指标记录异常: {e}")
+
+
+def record_cache_miss() -> None:
+    """
+    记录缓存未命中
+
+    作用：
+        在 RedisManager.get() 未找到缓存时调用，
+        统计缓存未命中量以评估缓存策略效果。
+    """
+    if not is_prometheus_enabled():
+        return
+    try:
+        redis_cache_misses_total.inc()
+    except Exception as e:
+        logger.debug(f"Redis 缓存未命中指标记录异常: {e}")
+
+
 def init_app_info():
     """
     初始化应用信息指标

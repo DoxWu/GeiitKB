@@ -3,9 +3,9 @@
  *
  * 作用：
  *   封装文档列表、上传、详情、删除、重新处理等接口调用。
- *   文档库分支管理接口需后端新增，当前使用 Mock 实现。
+ *   文档库分支管理接口已由后端实现（folders.py），以下为真实 API 调用。
  *
- * 对齐后端路由：kb_qa_system/backend/app/api/v1/documents.py
+ * 对齐后端路由：kb_qa_system/backend/app/api/routes/documents.py、folders.py
  */
 
 import { apiClient } from "./client";
@@ -180,59 +180,24 @@ export async function importFromUrl(
 }
 
 // ============================================
-// 文档库分支管理（需后端新增，当前使用 Mock 实现）
+// 文档库分支管理（真实 API 调用，对齐后端 folders.py）
 // ============================================
-
-/** Mock 分支数据存储键 */
-const MOCK_FOLDERS_KEY = "kb_mock_folders";
-
-/** Mock 延迟 */
-function mockDelay(ms = 500): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** 读取 Mock 分支数据 */
-function readMockFolders(): DocumentFolder[] {
-  try {
-    const raw = localStorage.getItem(MOCK_FOLDERS_KEY);
-    if (raw) return JSON.parse(raw) as DocumentFolder[];
-  } catch {
-    // 忽略解析错误
-  }
-  // 默认分支
-  const defaults: DocumentFolder[] = [
-    {
-      id: 1,
-      name: "默认分支",
-      document_count: 0,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    },
-  ];
-  localStorage.setItem(MOCK_FOLDERS_KEY, JSON.stringify(defaults));
-  return defaults;
-}
-
-/** 写入 Mock 分支数据 */
-function writeMockFolders(folders: DocumentFolder[]): void {
-  localStorage.setItem(MOCK_FOLDERS_KEY, JSON.stringify(folders));
-}
 
 /**
  * 获取文档库分支列表
  *
- * Mock 实现：从 localStorage 读取分支数据。
+ * 调用 GET /documents/folders，返回当前用户创建的所有分支（含文档数量）。
  *
  * @returns 分支列表响应
  */
 export async function getFolders(): Promise<FolderListResponse> {
-  await mockDelay();
-  const items = readMockFolders();
-  return { items, total: items.length };
+  return apiClient.get<FolderListResponse>(API_PATHS.FOLDERS);
 }
 
 /**
  * 创建文档库分支
+ *
+ * 调用 POST /documents/folders，分支名在同一用户下唯一。
  *
  * @param data - 创建请求（name）
  * @returns 新建的分支
@@ -240,22 +205,13 @@ export async function getFolders(): Promise<FolderListResponse> {
 export async function createFolder(
   data: CreateFolderRequest,
 ): Promise<DocumentFolder> {
-  await mockDelay();
-  const folders = readMockFolders();
-  const newFolder: DocumentFolder = {
-    id: Date.now(),
-    name: data.name,
-    document_count: 0,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-  folders.push(newFolder);
-  writeMockFolders(folders);
-  return newFolder;
+  return apiClient.post<DocumentFolder>(API_PATHS.FOLDERS, data);
 }
 
 /**
  * 更新文档库分支（重命名）
+ *
+ * 调用 PATCH /documents/folders/{id}，修改分支名称。
  *
  * @param id - 分支ID
  * @param data - 更新请求
@@ -265,28 +221,39 @@ export async function updateFolder(
   id: number,
   data: UpdateFolderRequest,
 ): Promise<DocumentFolder> {
-  await mockDelay();
-  const folders = readMockFolders();
-  const index = folders.findIndex((f) => f.id === id);
-  if (index === -1) throw new Error("分支不存在");
-
-  folders[index] = {
-    ...folders[index],
-    ...data,
-    updated_at: new Date().toISOString(),
-  };
-  writeMockFolders(folders);
-  return folders[index];
+  return apiClient.patch<DocumentFolder>(API_PATHS.FOLDER_DETAIL(id), data);
 }
 
 /**
  * 删除文档库分支
  *
+ * 调用 DELETE /documents/folders/{id}，分支内文档的 folder_id 置 NULL（不删除文档）。
+ *
  * @param id - 分支ID
  */
 export async function deleteFolder(id: number): Promise<void> {
-  await mockDelay();
-  const folders = readMockFolders();
-  const filtered = folders.filter((f) => f.id !== id);
-  writeMockFolders(filtered);
+  await apiClient.delete(API_PATHS.FOLDER_DETAIL(id));
+}
+
+/**
+ * 获取分支内文档列表
+ *
+ * 调用 GET /documents/folders/{id}/documents，返回指定分支内的文档列表（分页）。
+ *
+ * @param id - 分支ID
+ * @param page - 页码，默认 1
+ * @param pageSize - 每页数量，默认 10
+ * @returns 文档列表响应
+ */
+export async function getFolderDocuments(
+  id: number,
+  page: number = 1,
+  pageSize: number = 10,
+): Promise<DocumentListResponse> {
+  const query = new URLSearchParams();
+  query.set("page", String(page));
+  query.set("page_size", String(pageSize));
+  return apiClient.get<DocumentListResponse>(
+    `${API_PATHS.FOLDER_DETAIL(id)}/documents?${query.toString()}`,
+  );
 }

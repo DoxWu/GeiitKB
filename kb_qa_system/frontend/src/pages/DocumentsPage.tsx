@@ -52,12 +52,17 @@ export default function DocumentsPage() {
   const [urlImportOpen, setUrlImportOpen] = useState(false);
 
   // 页面加载时获取分支列表
+  // E3-03: 仅在挂载时执行一次。loadFolders 来自 zustand store，
+  // 引用稳定但 lint 无法识别；若加入依赖会导致重复请求。
   useEffect(() => {
     loadFolders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // URL folderId 变化时，同步选中分支并加载文档
+  // E3-03: 仅依赖 URL 参数 folderId 变化触发。
+  // currentFolderId/selectFolder/loadDocuments 来自 store，
+  // 引用稳定但 lint 无法识别；加入依赖会导致 URL 变化时重复触发。
   useEffect(() => {
     if (folderId !== undefined) {
       const id = Number(folderId);
@@ -76,6 +81,8 @@ export default function DocumentsPage() {
   }, [folderId]);
 
   // 组件卸载时停止所有轮询，避免内存泄漏
+  // E3-03: 仅在挂载时注册 cleanup 函数。stopAllPolling 来自 store，
+  // 引用稳定但 lint 无法识别；加入依赖会导致 cleanup 提前执行。
   useEffect(() => {
     return () => {
       stopAllPolling();

@@ -94,6 +94,14 @@ class User(Base):
         cascade="all, delete-orphan"
     )
 
+    # 用户的文档库分支（一对多）
+    # 作用：用户创建的文档分支，删除用户时级联删除分支
+    folders: Mapped[List["DocumentFolder"]] = relationship(
+        "DocumentFolder",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+
     def __repr__(self) -> str:
         """
         字符串表示，便于调试

@@ -10,6 +10,10 @@
  *
  * 使用方式：
  *   <DocumentList />
+ *
+ * E2-04 虚拟化评估：
+ *   单用户文档通常 < 100 条，配合分页（pageSize=20）每页最多渲染 20 项，
+ *   无需虚拟化。若数据量增长到 500+，考虑引入 @tanstack/react-virtual。
  */
 
 import { FileText } from "lucide-react";

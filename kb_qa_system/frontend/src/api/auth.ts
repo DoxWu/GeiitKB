@@ -2,10 +2,12 @@
  * 认证相关 API 接口
  *
  * 作用：
- *   封装登录、注册、Token 刷新、登出等认证相关接口调用。
- *   注册申请和密码设置接口需后端新增，当前使用 Mock 实现。
+ *   封装登录、注册申请、Token 刷新、登出、密码设置等认证相关接口调用。
+ *   所有接口均已对接后端真实路由（注册审批流程已实现）。
  *
- * 对齐后端路由：kb_qa_system/backend/app/api/v1/auth.py
+ * 对齐后端路由：
+ *   - 登录/登出/刷新/用户信息/账号删除/数据导出：kb_qa_system/backend/app/api/routes/auth.py
+ *   - 注册申请/审批/密码设置：kb_qa_system/backend/app/api/routes/registration.py
  */
 
 import { apiClient } from "./client";

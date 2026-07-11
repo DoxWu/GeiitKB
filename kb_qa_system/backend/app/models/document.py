@@ -19,6 +19,7 @@ from sqlalchemy import String, DateTime, Text, Integer, ForeignKey, JSON, Float,
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.models.document_folder import DocumentFolder
 
 
 class Document(Base):
@@ -163,6 +164,15 @@ class Document(Base):
         index=True,
     )
 
+    # 所属文档库分支ID（外键，删除分支时置 NULL）
+    # 作用：文档按分支分类管理，NULL 表示未分类（默认分支）
+    folder_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("document_folders.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # 软删除标记
     # 作用：不真正删除文档，便于数据恢复和审计
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
@@ -198,6 +208,13 @@ class Document(Base):
         back_populates="document",
         cascade="all, delete-orphan",
         order_by="DocumentChunk.chunk_index"  # 按块索引排序
+    )
+
+    # 所属文档库分支（多对一）
+    # 作用：获取文档所属的分支信息，删除分支时 folder_id 置 NULL（不删除文档）
+    folder: Mapped[Optional["DocumentFolder"]] = relationship(
+        "DocumentFolder",
+        back_populates="documents",
     )
 
     # ============================================

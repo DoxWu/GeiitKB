@@ -28,7 +28,6 @@ export default defineConfig({
         "src/vite-env.d.ts",
         "src/test/**",
         "src/types/**",
-        "src/pages/**",
         "src/components/**/index.ts",
         "**/*.config.*",
       ],

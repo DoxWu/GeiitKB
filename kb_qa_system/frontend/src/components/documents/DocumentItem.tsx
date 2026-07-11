@@ -21,6 +21,7 @@ import { useDocumentStore } from "@/store/documentStore";
 import { useToastStore } from "@/store/toastStore";
 import { formatFileSize, formatRelativeTime, getStatusLabel } from "@/utils/format";
 import { getFileIcon } from "@/utils/fileType";
+import { highlightKeyword } from "@/utils/highlight";
 import { cn } from "@/lib/utils";
 import type { DocumentResponse } from "@/types/document";
 
@@ -44,7 +45,7 @@ interface DocumentItemProps {
 
 /** DocumentItem 组件 */
 export function DocumentItem({ document }: DocumentItemProps) {
-  const { openPreview, removeDocument, reprocessDocument } = useDocumentStore();
+  const { openPreview, removeDocument, reprocessDocument, searchKeyword } = useDocumentStore();
   const toast = useToastStore();
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -97,8 +98,9 @@ export function DocumentItem({ document }: DocumentItemProps) {
       {/* 文档信息 */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
+          {/* D2-02 搜索结果高亮：匹配搜索关键词的部分用 <mark> 标记 */}
           <span className="truncate text-sm font-medium text-ink">
-            {document.file_name}
+            {highlightKeyword(document.file_name, searchKeyword)}
           </span>
           <Badge variant={STATUS_VARIANT_MAP[document.status] || "default"}>
             {getStatusLabel(document.status)}

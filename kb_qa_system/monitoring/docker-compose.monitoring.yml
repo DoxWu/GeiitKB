@@ -1,8 +1,13 @@
 # ============================================
-# GeiIt企业知识库 - 监控栈（Prometheus + Grafana）
+# GeiIt企业知识库 - 监控栈（Prometheus + Grafana + Alertmanager + Loki + Promtail）
 # ============================================
 # 作用：
-#     启动 Prometheus 指标采集和 Grafana 可视化面板。
+#     启动完整可观测性栈：
+#     - Prometheus：指标采集
+#     - Grafana：可视化面板（指标 + 日志统一查询）
+#     - Alertmanager：告警通知
+#     - Loki：日志聚合（E6-01，轻量级日志系统，只索引标签）
+#     - Promtail：日志采集代理（从 Docker 容器收集日志发送到 Loki）
 #     需与主 docker-compose.yml 一起使用（共享网络）。
 #
 # 使用方式：
@@ -14,12 +19,16 @@
 #     （需确保监控容器与主服务在同一 Docker 网络）
 #
 # 访问地址：
-#     Prometheus: http://localhost:9090
-#     Grafana:    http://localhost:3001 (admin/admin)
+#     Prometheus:   http://localhost:9090
+#     Grafana:      http://localhost:3001 (admin/admin)
+#     Alertmanager: http://localhost:9093
+#     Loki:         http://localhost:3100 (API，无 UI)
 #
 # 前置准备：
 #     1. 在 backend/.env 中设置 ENABLE_PROMETHEUS=true
 #     2. 主服务（api）需暴露 /metrics 端点
+#     3. 告警邮件通知需配置 SMTP_* 和 ALERT_EMAIL_* 环境变量（复用 Resend 配置）
+#     4. Promtail 需挂载 Docker socket 和容器日志目录（已在 compose 中配置）
 # ============================================
 
 services:
@@ -76,12 +85,103 @@ services:
     networks:
       - default
 
+  # --------------------------------------------
+  # Alertmanager 告警通知（D8-01）
+  # --------------------------------------------
+  # 作用：接收 Prometheus 触发的告警，通过邮件通知管理员
+  # 告警流程：Prometheus 检测异常 → 触发 alerts.yml 规则 →
+  #           发送到 Alertmanager → 按路由分组 → 邮件通知管理员
+  # SMTP 配置复用项目 Resend 邮件服务（通过环境变量注入）
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: kb_qa_alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    # SMTP 配置通过环境变量注入（复用 Resend 邮件配置）
+    # 作用：Alertmanager 读取这些变量替换 alertmanager.yml 中的 ${VAR} 占位符
+    environment:
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-admin@example.com}
+      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-GeiIt企业知识库 <onboarding@resend.dev>}
+      SMTP_HOST: ${SMTP_HOST:-smtp.resend.com}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER:-resend}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    depends_on:
+      - prometheus
+    networks:
+      - default
+
+  # --------------------------------------------
+  # Loki 日志聚合（E6-01）
+  # --------------------------------------------
+  # 作用：接收 Promtail 推送的日志，建立标签索引供 Grafana 查询
+  # 特点：只索引日志标签（metadata）不索引全文，存储成本远低于 ELK
+  # 查询语言：LogQL（类似 PromQL，支持过滤、聚合、正则匹配）
+  loki:
+    image: grafana/loki:latest
+    container_name: kb_qa_loki
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      # Loki 配置文件
+      - ./loki-config.yml:/etc/loki/local-config.yaml:ro
+      # 数据持久化（日志块、索引、压缩数据）
+      - loki_data:/loki
+    command:
+      - "-config.file=/etc/loki/local-config.yaml"
+    # 健康检查：Loki /ready 端点返回 200 表示就绪
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - default
+
+  # --------------------------------------------
+  # Promtail 日志采集代理（E6-01）
+  # --------------------------------------------
+  # 作用：通过 Docker socket 自动发现容器，采集容器日志并发送到 Loki
+  # 工作流程：监听 docker.sock → 发现 kb_qa_* 容器 → 读取 JSON 日志 → 解析标签 → 推送 Loki
+  # 依赖：需挂载 /var/run/docker.sock 和 /var/lib/docker/containers
+  promtail:
+    image: grafana/promtail:latest
+    container_name: kb_qa_promtail
+    restart: unless-stopped
+    ports:
+      - "9080:9080"  # Promtail Web UI（查看采集状态和targets）
+    volumes:
+      # Promtail 配置文件
+      - ./promtail.yml:/etc/promtail/config.yml:ro
+      # Docker socket：用于容器自动发现
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # 容器日志目录：Docker json-file 驱动日志存储位置
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      # positions 文件持久化：记录日志读取位置，重启后不丢日志
+      - promtail_data:/tmp
+    command:
+      - "-config.file=/etc/promtail/config.yml"
+    depends_on:
+      - loki
+    networks:
+      - default
+
 # ============================================
 # 持久化卷
 # ============================================
 volumes:
   prometheus_data:    # Prometheus 指标数据（30 天保留）
   grafana_data:       # Grafana 配置和用户数据
+  loki_data:          # Loki 日志块和索引（7 天保留，由 loki-config.yml 配置）
+  promtail_data:      # Promtail positions 文件（记录日志读取位置）
 
 # ============================================
 # 网络

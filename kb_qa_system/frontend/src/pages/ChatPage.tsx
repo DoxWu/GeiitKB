@@ -58,12 +58,17 @@ export default function ChatPage() {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   // 页面加载时获取对话列表
+  // E3-03: 仅在挂载时执行一次。loadConversations 来自 zustand store，
+  // 引用稳定但 lint 无法识别；若加入依赖会导致重复请求。
   useEffect(() => {
     loadConversations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // URL conversationId 变化时，同步选中对话
+  // E3-03: 仅依赖 URL 参数 conversationId 变化触发。
+  // currentConversationId/selectConversation/startNewConversation 来自 store，
+  // 引用稳定但 lint 无法识别；加入依赖会导致 URL 变化时重复触发。
   useEffect(() => {
     if (conversationId !== undefined) {
       const id = Number(conversationId);

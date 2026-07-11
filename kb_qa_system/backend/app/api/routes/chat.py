@@ -690,25 +690,33 @@ def list_conversations(
     # 作用：原实现 .all() 全量返回，对话数多时消耗内存和带宽
     page: int = Query(default=1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(default=20, ge=1, le=100, description="每页数量，1-100"),
+    # D4-02 游标分页：可选 cursor 参数，传入时使用游标分页（向后兼容 offset/limit）
+    # 作用：大数据量时避免 offset 深翻页性能退化
+    cursor: Optional[int] = Query(
+        None, ge=1, description="游标（上一页最后一条对话ID，传入时使用游标分页）"
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> Any:
     """
-    获取用户的对话列表（分页）
+    获取用户的对话列表（分页 + 游标分页）
 
     作用：
         返回当前用户的对话列表，按最后更新时间倒序，支持分页。
+        传入 cursor 参数时使用游标分页（向后兼容 offset/limit）。
 
     查询参数：
-        - page: 页码，默认 1
+        - page: 页码，默认 1（cursor 模式下忽略）
         - page_size: 每页数量，默认 20，最大 100
+        - cursor: 游标（可选，传入时使用游标分页）
 
     响应（200）：
         {
             "items": [...],
             "total": 100,
             "page": 1,
-            "page_size": 20
+            "page_size": 20,
+            "next_cursor": null
         }
     """
     query = db.query(Conversation).filter(
@@ -717,20 +725,35 @@ def list_conversations(
     )
 
     total = query.count()
-    # M-7 修复：分页查询，避免全量加载
-    offset = (page - 1) * page_size
-    conversations = (
-        query.order_by(Conversation.updated_at.desc())
-        .offset(offset)
-        .limit(page_size)
-        .all()
-    )
+
+    # D4-02 游标分页：传入 cursor 时使用游标分页，否则保持 offset/limit（向后兼容）
+    next_cursor = None
+    if cursor:
+        # 游标分页：WHERE id < cursor ORDER BY id DESC LIMIT page_size
+        query = query.filter(Conversation.id < cursor)
+        conversations = (
+            query.order_by(Conversation.id.desc())
+            .limit(page_size)
+            .all()
+        )
+        if len(conversations) == page_size:
+            next_cursor = conversations[-1].id
+    else:
+        # M-7 修复：分页查询，避免全量加载
+        offset = (page - 1) * page_size
+        conversations = (
+            query.order_by(Conversation.updated_at.desc())
+            .offset(offset)
+            .limit(page_size)
+            .all()
+        )
 
     return {
         "items": conversations,
         "total": total,
         "page": page,
         "page_size": page_size,
+        "next_cursor": next_cursor,
     }
 
 

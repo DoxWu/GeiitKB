@@ -24,6 +24,7 @@ const { mockDocStore } = vi.hoisted(() => ({
     openPreview: vi.fn(),
     removeDocument: vi.fn(),
     reprocessDocument: vi.fn(),
+    searchKeyword: "", // D2-02 搜索高亮所需（Task #143 新增）
   },
 }));
 

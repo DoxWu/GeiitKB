@@ -184,6 +184,7 @@ class RedisManager:
 
         作用：
             从 Redis 读取数据，自动尝试 JSON 反序列化。
+            同时记录缓存命中/未命中指标（E2-03）。
 
         参数：
             key: str - 缓存 key（不含前缀）
@@ -200,7 +201,20 @@ class RedisManager:
             value = redis_client.get(full_key)
 
             if value is None:
+                # E2-03: 记录缓存未命中
+                try:
+                    from app.core.prometheus_metrics import record_cache_miss
+                    record_cache_miss()
+                except Exception:
+                    pass
                 return default
+
+            # E2-03: 记录缓存命中
+            try:
+                from app.core.prometheus_metrics import record_cache_hit
+                record_cache_hit()
+            except Exception:
+                pass
 
             # 尝试 JSON 反序列化
             try:

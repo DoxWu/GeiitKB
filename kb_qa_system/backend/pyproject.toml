@@ -1,0 +1,53 @@
+# ============================================
+# GeiIt企业知识库 - Python 项目配置
+# ============================================
+# 作用：
+#   配置 pytest 测试框架、覆盖率阈值和 ruff 代码质量工具。
+#   E3-02: 测试覆盖率阈值强制
+# ============================================
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "app/main.py",          # 应用入口，由集成测试覆盖
+    "app/__init__.py",
+    "*/alembic/*",          # 迁移脚本不纳入覆盖率
+    "*/tests/*",            # 测试文件本身不纳入
+]
+
+[tool.coverage.report]
+# E3-02: 覆盖率阈值 — 低于此值时测试失败
+fail_under = 60
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "pass",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4"]
+ignore = ["E501"]  # 行长度由 formatter 处理
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

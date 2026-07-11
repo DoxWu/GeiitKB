@@ -54,6 +54,8 @@ interface DocumentState {
   // ===== 搜索与排序 =====
   /** 搜索关键词 */
   searchKeyword: string;
+  /** 搜索历史（D2-03，最近 10 条，去重，持久化到 localStorage） */
+  searchHistory: string[];
   /** 排序字段 */
   sortBy: SortField;
   /** 排序方向 */
@@ -94,6 +96,10 @@ interface DocumentState {
   // ===== 搜索与排序 =====
   /** 设置搜索关键词（不立即加载，由组件防抖触发） */
   setSearchKeyword: (keyword: string) => void;
+  /** 添加搜索关键词到历史（D2-03） */
+  addSearchHistory: (keyword: string) => void;
+  /** 清空搜索历史（D2-03） */
+  clearSearchHistory: () => void;
   /** 设置排序 */
   setSort: (field: SortField, order: SortOrder) => void;
   /** 设置当前页码并加载文档 */
@@ -196,6 +202,43 @@ function stopAllDocumentPolls(): void {
 const DEFAULT_SORT_FIELD: SortField = "created_at";
 const DEFAULT_SORT_ORDER: SortOrder = "desc";
 
+/** D2-03 搜索历史：localStorage 存储键名 */
+const SEARCH_HISTORY_KEY = "geiit-search-history";
+/** D2-03 搜索历史：最大保存条数 */
+const MAX_HISTORY_ITEMS = 10;
+
+/**
+ * 从 localStorage 加载搜索历史（D2-03）
+ *
+ * 作用：
+ *   在 store 初始化时读取已保存的搜索历史记录。
+ *
+ * @returns 搜索历史数组，无记录时返回空数组
+ */
+function loadSearchHistory(): string[] {
+  try {
+    const raw = localStorage.getItem(SEARCH_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.slice(0, MAX_HISTORY_ITEMS) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 保存搜索历史到 localStorage（D2-03）
+ *
+ * @param history - 搜索历史数组
+ */
+function saveSearchHistory(history: string[]): void {
+  try {
+    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(history));
+  } catch {
+    // localStorage 写入失败（如隐私模式），忽略
+  }
+}
+
 /** 文档 Store */
 export const useDocumentStore = create<DocumentState>((set, get) => ({
   // ===== 初始状态 =====
@@ -211,6 +254,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   error: null,
 
   searchKeyword: "",
+  searchHistory: loadSearchHistory(),
   sortBy: DEFAULT_SORT_FIELD,
   sortOrder: DEFAULT_SORT_ORDER,
 
@@ -350,6 +394,22 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   // ===== 搜索与排序 =====
   setSearchKeyword: (keyword: string) => {
     set({ searchKeyword: keyword, page: 1 });
+  },
+
+  addSearchHistory: (keyword: string) => {
+    const trimmed = keyword.trim();
+    if (!trimmed) return;
+    // 去重后放到最前，保留最多 MAX_HISTORY_ITEMS 条
+    const current = get().searchHistory;
+    const filtered = current.filter((item) => item !== trimmed);
+    const updated = [trimmed, ...filtered].slice(0, MAX_HISTORY_ITEMS);
+    saveSearchHistory(updated);
+    set({ searchHistory: updated });
+  },
+
+  clearSearchHistory: () => {
+    saveSearchHistory([]);
+    set({ searchHistory: [] });
   },
 
   setSort: (field: SortField, order: SortOrder) => {

@@ -1,6 +1,6 @@
 # GeiIt企业知识库 - 监控系统
 
-> 基于 Prometheus + Grafana 的全链路监控方案，覆盖 HTTP 服务、RAG 链路、LLM 性能、服务质量、文档处理五大维度。
+> 基于 Prometheus + Grafana + Loki 的全链路可观测性方案，覆盖指标监控（HTTP 服务、RAG 链路、LLM 性能、服务质量、文档处理五大维度）和日志聚合（容器日志统一查询）。
 
 ## 架构概览
 
@@ -24,11 +24,33 @@
               └────────┬────────┘
                        │ PromQL 查询
                        ▼
-              ┌─────────────────┐
-              │     Grafana     │  可视化面板
-              │  (port 3001)    │
-              └─────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                        Grafana (port 3001)                   │
+│            指标面板（Prometheus）+ 日志面板（Loki）           │
+└──────────────────────────▲───────────────────────────────────┘
+                           │ LogQL 查询
+                           │
+              ┌────────────┴───────────┐
+              │      Loki (port 3100)   │  日志聚合（只索引标签）
+              └────────────▲───────────┘
+                           │ 推送日志
+                           │
+              ┌────────────┴───────────┐
+              │  Promtail (port 9080)  │  日志采集代理
+              │  通过 Docker socket    │
+              │  自动发现 kb_qa_* 容器 │
+              └────────────────────────┘
 ```
+
+## 指标监控与日志聚合的关系
+
+| 维度     | 指标监控（Prometheus）       | 日志聚合（Loki + Promtail）      |
+| -------- | ---------------------------- | -------------------------------- |
+| 数据类型 | 数值指标（Counter/Histogram）| 文本日志                          |
+| 查询语言 | PromQL                       | LogQL                            |
+| 典型场景 | 监控趋势、告警阈值、聚合统计 | 排查错误、审计追踪、关联分析      |
+| 存储成本 | 低（仅存指标值）             | 中（只索引标签，不索引全文）      |
+| 组合使用 | 指标面板显示延迟飙升 → 日志面板查看同时段 ERROR 日志，定位根因 ||
 
 ## 快速启动
 
@@ -55,8 +77,11 @@ docker-compose -f docker-compose.yml -f monitoring/docker-compose.monitoring.yml
 | ------------ | ------------------------- | ------------ |
 | Prometheus   | http://localhost:9090     | 无需认证     |
 | Grafana      | http://localhost:3001     | admin/admin  |
+| Alertmanager | http://localhost:9093     | 无需认证     |
+| Loki API     | http://localhost:3100     | 无需认证（API，无 UI） |
+| Promtail     | http://localhost:9080     | 无需认证（查看采集状态） |
 
-Grafana 启动后会自动加载 "RAG 监控" 文件夹下的仪表盘。
+Grafana 启动后会自动加载 "RAG 监控" 文件夹下的仪表盘，并自动配置 Prometheus 和 Loki 两个数据源。
 
 ### 4. 验证指标采集
 
@@ -167,13 +192,93 @@ Grafana 仪表盘 `rag_dashboard.json` 包含 6 大区块、30+ 面板：
 
 ### 配置告警通知（Alertmanager）
 
-告警当前仅在 Prometheus UI 显示。如需邮件/钉钉/Slack 通知，需部署 Alertmanager：
+Alertmanager 已包含在监控栈中，告警通过邮件通知管理员。配置流程：
 
 ```bash
-# 1. 在 docker-compose.monitoring.yml 中添加 alertmanager 服务
-# 2. 在 prometheus.yml 中配置 alerting.alertmanagers
-# 3. 创建 alertmanager.yml 配置通知渠道
+# 1. 在 backend/.env 中配置环境变量（复用 Resend SMTP 配置）：
+#    ALERT_EMAIL_TO=admin@example.com          # 告警接收邮箱
+#    ALERT_EMAIL_FROM=GeiIt企业知识库 <onboarding@resend.dev>  # 发件人
+#    SMTP_HOST=smtp.resend.com                 # SMTP 主机
+#    SMTP_PORT=465                             # SMTP 端口
+#    SMTP_USER=resend                          # SMTP 用户
+#    SMTP_PASSWORD=<your_resend_api_key>       # Resend API Key
+
+# 2. 启动监控栈（Alertmanager 自动启动）
+docker-compose -f docker-compose.yml -f monitoring/docker-compose.monitoring.yml up -d
+
+# 3. 验证 Alertmanager 状态
+#    访问 http://localhost:9093，查看告警路由和静默规则
 ```
+
+Alertmanager 配置文件 `alertmanager.yml` 使用环境变量占位符（`${VAR}`），启动时由 Docker 自动注入。
+
+## 日志聚合（Loki + Promtail）
+
+### 工作原理
+
+1. **Promtail** 通过 Docker socket 自动发现 `kb_qa_*` 前缀的容器
+2. 读取容器的 JSON 日志文件，解析后添加标签（container_name、service、stream、level）
+3. 批量推送到 **Loki**（每秒或 1MB 触发一次）
+4. **Loki** 只索引标签（不索引全文），存储成本远低于 ELK
+5. 在 **Grafana** 中使用 LogQL 查询日志，可与指标面板组合展示
+
+### 日志标签
+
+| 标签            | 来源                      | 示例值              |
+| --------------- | ------------------------- | ------------------- |
+| `container_name`| Docker 容器名             | `kb_qa_api`         |
+| `service`       | Compose service 名        | `api`、`worker`     |
+| `stream`        | 日志流                    | `stdout`、`stderr`  |
+| `level`         | 日志级别（生产环境解析）  | `info`、`error`     |
+| `compose_project`| Compose 项目名           | `kb_qa_system`      |
+
+### LogQL 查询示例
+
+在 Grafana 中添加 Loki 面板，使用以下查询：
+
+```logql
+# 查看后端 API 所有日志
+{container_name="kb_qa_api"}
+
+# 只看错误日志（生产环境 JSON 日志，已解析 level 标签）
+{container_name="kb_qa_api", level="error"}
+
+# 查看异常相关日志（全文搜索）
+{container_name="kb_qa_api"} |= "异常"
+
+# 查看 Celery Worker 日志
+{container_name="kb_qa_worker"}
+
+# 统计过去 5 分钟的错误日志速率
+rate({container_name="kb_qa_api", level="error"}[5m])
+
+# 多容器联合查询
+{container_name=~"kb_qa_.*"} |= "ERROR"
+```
+
+### 验证日志采集
+
+```bash
+# 1. 检查 Promtail 是否发现容器
+#    访问 http://localhost:9080/targets，应看到 kb_qa_* 容器列表
+
+# 2. 检查 Loki 是否接收日志
+curl -G -s "http://localhost:3100/loki/api/v1/labels" | jq
+
+# 3. 查询最近日志
+curl -G -s "http://localhost:3100/loki/api/v1/query_range" \
+  --data-urlencode 'query={container_name="kb_qa_api"}' \
+  --data-urlencode 'limit=5' | jq
+
+# 4. 在 Grafana 中查询
+#    进入 Explore → 选择 Loki 数据源 → 输入 LogQL 查询
+```
+
+### 日志保留策略
+
+- **默认保留 7 天**（`loki-config.yml` 中 `retention_period: 168h`）
+- 过期日志由 Compactor 自动删除（每 10 分钟压缩和清理一次）
+- 如需更长保留期，修改 `loki-config.yml` 的 `retention_period` 并重启 Loki
 
 ## 安全配置
 
@@ -202,11 +307,14 @@ monitoring/
 ├── README.md                              # 本说明文档
 ├── prometheus.yml                         # Prometheus server 配置
 ├── alerts.yml                             # 告警规则
+├── alertmanager.yml                       # Alertmanager 告警通知配置
+├── loki-config.yml                        # Loki 日志聚合配置（E6-01）
+├── promtail.yml                           # Promtail 日志采集代理配置（E6-01）
 ├── docker-compose.monitoring.yml          # 监控栈容器编排
 └── grafana/
     ├── provisioning/
     │   ├── datasources/
-    │   │   └── datasource.yml             # Prometheus 数据源自动配置
+    │   │   └── datasource.yml             # 数据源自动配置（Prometheus + Loki）
     │   └── dashboards/
     │       └── dashboard.yml              # 仪表盘 provider 配置
     └── dashboards/
@@ -238,3 +346,25 @@ monitoring/
 - 在 Railway 上设置 `ENABLE_PROMETHEUS=true` 即可启用
 - Prometheus 通过公网抓取需配置 `PROMETHEUS_AUTH_ENABLED=true` 保护端点
 - 可在 `prometheus.yml` 中调整 `scrape_interval` 降低采集频率
+
+### Q: Loki/Promtail 日志查询为空？
+
+- 检查 Promtail 是否发现容器：访问 http://localhost:9080/targets
+- 确认容器名以 `kb_qa_` 前缀开头（promtail.yml 中配置的过滤器）
+- 检查 Promtail 日志：`docker-compose -f monitoring/docker-compose.monitoring.yml logs promtail`
+- 检查 Loki 健康：`curl http://localhost:3100/ready` 应返回 `ready`
+- 确认 Grafana 数据源已配置：进入 Configuration → Data Sources，应有 Loki
+
+### Q: Loki 磁盘占用过高？
+
+- 当前默认保留 7 天日志（`loki-config.yml` 的 `retention_period: 168h`）
+- 可缩短保留期：修改 `retention_period` 并重启 Loki
+- 检查是否有高基数标签：`curl http://localhost:3100/loki/api/v1/cardinality/labels`
+- 避免将 request_id、user_id 等高基数字段作为标签（promtail.yml 已规避）
+
+### Q: 生产环境（Railway）如何使用日志聚合？
+
+- Railway 不支持 Docker Compose，Loki/Promtail 仅适用于本地 Docker 部署
+- Railway 自带日志查看功能（Dashboard → Service → Logs）
+- 生产环境推荐方案：Railay 原生日志 + Sentry 错误监控（已集成）
+- 如需集中式日志聚合，可将日志发送到外部服务（如 Grafana Cloud、Datadog）

@@ -22,9 +22,10 @@
 import os
 import uuid
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Path
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Path, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 from typing import Any, Optional
 
 from app.core.database import get_db
@@ -43,6 +44,7 @@ from app.schemas.document import (
 )
 from app.services.document_processor import document_processor
 from app.services.permission import permission_service, VISIBILITY_PRIVATE, VISIBILITY_PUBLIC
+from app.services.audit_service import audit_service
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +377,16 @@ def list_documents(
     # 作用：防止 page=0 或 page_size=999999 导致的异常查询和性能问题
     page: int = Query(default=1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(default=10, ge=1, le=100, description="每页数量，1-100"),
+    # D4-02 游标分页：可选 cursor 参数，传入时使用游标分页（向后兼容 offset/limit）
+    # 作用：大数据量时避免 offset 深翻页性能退化（offset 100000 需扫描 100000 行）
+    cursor: Optional[int] = Query(
+        None, ge=1, description="游标（上一页最后一条文档ID，传入时使用游标分页）"
+    ),
+    # D2-01 全文检索：替代 LIKE，使用 PostgreSQL to_tsvector + @@ 操作符
+    # 作用：利用 GIN 索引加速搜索，同时保留 ilike 作为短词降级兼容
+    search: Optional[str] = Query(
+        None, max_length=200, description="搜索关键词（标题全文检索）"
+    ),
     # M-6 修复：status 参数枚举校验，防止无效状态值导致空查询
     status: Optional[str] = Query(
         None,
@@ -389,10 +401,10 @@ def list_documents(
     current_user: User = Depends(get_current_active_user),
 ) -> Any:
     """
-    获取文档列表（分页 + 权限隔离）
+    获取文档列表（分页 + 权限隔离 + 全文检索）
 
     作用：
-        返回当前用户有权查看的文档，支持分页、状态筛选和范围选择。
+        返回当前用户有权查看的文档，支持分页、状态筛选、全文检索和范围选择。
         自动过滤已软删除的文档。
 
         【权限隔离】通过 scope 控制可见范围：
@@ -400,9 +412,17 @@ def list_documents(
         - mine：仅自己上传的文档
         - public：仅公共文档库（visibility=public）
 
+        【D4-02 游标分页】传入 cursor 参数时使用游标分页（WHERE id < cursor），
+        未传入时保持 offset/limit 分页（向后兼容）。响应含 next_cursor 字段。
+
+        【D2-01 全文检索】search 参数使用 to_tsvector + @@ 全文检索，
+        同时保留 ilike 作为短词降级兼容。
+
     查询参数：
-        - page: 页码，默认 1
+        - page: 页码，默认 1（cursor 模式下忽略）
         - page_size: 每页数量，默认 10
+        - cursor: 游标（可选，传入时使用游标分页）
+        - search: 搜索关键词（标题全文检索）
         - status: 状态筛选（pending/processing/completed/failed/low_quality）
         - scope: 范围（accessible/mine/public）
 
@@ -411,10 +431,13 @@ def list_documents(
             "items": [...],
             "total": 100,
             "page": 1,
-            "page_size": 10
+            "page_size": 10,
+            "next_cursor": null
         }
     """
-    # 构建查询（过滤软删除）
+    # D4-03 验证结论：DocumentResponse schema 不含 user 关联字段，
+    # 查询仅访问 Document 表字段，无 relationship 懒加载，不存在 N+1 问题。
+    # 若未来 DocumentResponse 新增 user 关联字段，需改用 joinedload(User) 预加载。
     query = db.query(Document).filter(Document.is_deleted == False)
 
     # 按范围过滤（权限隔离核心）
@@ -440,18 +463,40 @@ def list_documents(
     if status:
         query = query.filter(Document.status == status)
 
+    # D2-01 全文检索：search 参数使用 to_tsvector + @@ 操作符
+    # 作用：利用 PostgreSQL GIN 索引加速搜索，ilike 作为短词降级兼容
+    if search:
+        search_term = search.strip()
+        if search_term:
+            query = query.filter(
+                func.to_tsvector("simple", Document.title).match(search_term)
+                | Document.title.ilike(f"%{search_term}%")
+            )
+
     # 获取总数
     total = query.count()
 
-    # 分页
-    offset = (page - 1) * page_size
-    documents = query.offset(offset).limit(page_size).all()
+    # D4-02 游标分页：传入 cursor 时使用游标分页，否则保持 offset/limit（向后兼容）
+    next_cursor = None
+    if cursor:
+        # 游标分页：WHERE id < cursor ORDER BY id DESC LIMIT page_size
+        # 作用：避免 offset 深翻页性能退化
+        query = query.filter(Document.id < cursor)
+        documents = query.order_by(Document.id.desc()).limit(page_size).all()
+        # 若返回满页，说明可能还有更多数据，设置 next_cursor
+        if len(documents) == page_size:
+            next_cursor = documents[-1].id
+    else:
+        # 原 offset 逻辑保持（向后兼容）
+        offset = (page - 1) * page_size
+        documents = query.offset(offset).limit(page_size).all()
 
     return {
         "items": documents,
         "total": total,
         "page": page,
         "page_size": page_size,
+        "next_cursor": next_cursor,
     }
 
 
@@ -529,6 +574,7 @@ def get_document(
     summary="删除文档"
 )
 def delete_document(
+    request: Request,
     # L-4 修复：路径参数正整数校验，防止 document_id=0 或负数导致异常查询
     document_id: int = Path(..., ge=1, description="文档ID（正整数）"),
     db: Session = Depends(get_db),
@@ -608,6 +654,18 @@ def delete_document(
         )
 
     logger.info(f"文档已软删除: doc_id={document_id}")
+
+    # D10-01 审计日志：记录文档删除操作
+    # 作用：敏感操作留痕，便于安全审计追溯
+    audit_service.log(
+        db=db,
+        user_id=current_user.id,
+        action="document.delete",
+        resource_type="document",
+        resource_id=document_id,
+        detail={"title": document.title, "visibility": document.visibility},
+        request=request,
+    )
 
 
 # ============================================

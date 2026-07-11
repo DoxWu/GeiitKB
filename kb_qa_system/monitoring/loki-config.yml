@@ -1,0 +1,94 @@
+# ============================================
+# Loki 配置文件（E6-01）
+# ============================================
+# 作用：
+#     Loki 是 Grafana Labs 出品的日志聚合系统，类似 Prometheus 的日志版。
+#     只索引日志的标签（metadata）而非全文，存储成本远低于 ELK。
+#     与 Grafana 深度集成，支持 LogQL 查询语言。
+#
+# 存储策略：
+#     - 文件系统存储（filesystem）：开发/小规模部署使用，无需额外依赖
+#     - 生产环境可切换到 S3/GCS 对象存储（修改 storage_config 章节）
+#
+# 使用方式：
+#     由 docker-compose.monitoring.yml 挂载到 Loki 容器中
+#
+# LogQL 查询示例（Grafana → Loki）：
+#     - 查看所有日志：{job="docker"}
+#     - 按容器过滤：{container_name="kb_qa_api"}
+#     - 按级别过滤：{container_name="kb_qa_api", level="error"}
+#     - 全文搜索：{container_name="kb_qa_api"} |= "异常"
+#     - 统计错误数：rate({container_name="kb_qa_api", level="error"}[5m])
+# ============================================
+
+auth_enabled: false  # 开发环境关闭多租户认证
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore:
+      store: inmemory
+
+# 模式配置（Loki 2.x 推荐 single-binary 模式）
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+# 限制配置
+limits_config:
+  # 日志保留时间（7 天）
+  # 作用：自动删除过期日志，控制磁盘占用
+  retention_period: 168h
+  # 拒绝旧日志（超过最大年龄的日志不接收）
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+  # 单个流的最大写入速率（默认 10MB/s）
+  per_stream_rate_limit: 10MB
+  # 限制标签数量，防止高基数
+  max_label_names_per_series: 15
+  # 禁止高基数标签（如 request_id、user_id 等不应作为标签）
+  # 作用：避免标签组合爆炸导致内存和存储占用过高
+  cardinality_limit: 100000
+
+compactor:
+  working_directory: /loki/compactor
+  # 启用日志保留任务
+  retention_enabled: true
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 150
+  # 压缩间隔
+  compaction_interval: 10m
+
+# 删除 API（可选，用于手动清理日志）
+delete_request_store: filesystem
+
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /loki/rules
+  rule_path: /loki/rules-temp
+  alertmanager_url: http://alertmanager:9093
+  ring:
+    kvstore:
+      store: inmemory
+  enable_api: true
+
+analytics:
+  reporting_enabled: false  # 关闭使用统计上报
