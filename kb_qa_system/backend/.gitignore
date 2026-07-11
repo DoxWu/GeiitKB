@@ -48,8 +48,9 @@ data/
 logs/
 *.log
 
-# Celery 调度文件
+# Celery 调度文件（含 .db / .bak 变体）
 celerybeat-schedule
+celerybeat-schedule.*
 celerybeat.pid
 
 # 临时文件

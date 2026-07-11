@@ -66,7 +66,8 @@ export function LoginForm({ onSuccess }: LoginFormProps) {
     if (!validate()) return;
 
     try {
-      // 后端使用 username 字段，将邮箱作为 username 传入
+      // 后端 username 字段同时支持用户名和邮箱
+      // 前端登录表单使用邮箱，将其作为 username 传入
       await login({ username: email, password });
       onSuccess?.();
     } catch {

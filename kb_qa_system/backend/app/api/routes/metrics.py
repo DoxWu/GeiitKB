@@ -97,9 +97,10 @@ def _verify_auth(credentials: HTTPBasicCredentials) -> None:
     include_in_schema=False,  # 不在 Swagger 文档中显示（避免暴露给普通用户）
 )
 async def metrics(
-    credentials: Optional[HTTPBasicCredentials] = Depends(
-        _security if settings.PROMETHEUS_AUTH_ENABLED else None
-    ),
+    # 始终使用 HTTPBasic 依赖解析 Authorization 头（缺失时 credentials 为 None）
+    # 修复 P-02：此前使用 Depends(None) 导致 FastAPI 误将 args/kwargs 作为查询参数
+    #            从而返回 422 VALIDATION_ERROR。改为始终注入依赖，函数内部按开关判断。
+    credentials: Optional[HTTPBasicCredentials] = Depends(_security),
 ):
     """
     Prometheus 指标暴露端点
@@ -110,7 +111,7 @@ async def metrics(
 
     实现方式：
         1. 检查 Prometheus 是否启用（未启用返回 404）
-        2. 检查 Basic Auth（如启用）
+        2. 检查 Basic Auth（如启用且提供了凭据）
         3. 调用 get_metrics_data() 生成指标数据
         4. 返回 PlainTextResponse
 
@@ -122,7 +123,7 @@ async def metrics(
         Prometheus 未启用时返回 404
 
     响应（401）：
-        Basic Auth 认证失败
+        Basic Auth 认证失败（仅在 PROMETHEUS_AUTH_ENABLED=true 时）
     """
     # Prometheus 未启用时返回 404
     # 作用：避免暴露空指标端点
@@ -132,8 +133,16 @@ async def metrics(
             detail="Prometheus metrics not enabled",
         )
 
-    # Basic Auth 验证（如启用）
-    if settings.PROMETHEUS_AUTH_ENABLED and credentials:
+    # Basic Auth 验证（仅在启用认证时）
+    # 作用：PROMETHEUS_AUTH_ENABLED=False 时跳过验证，直接返回指标
+    if settings.PROMETHEUS_AUTH_ENABLED:
+        # 启用了认证但未提供凭据 → 返回 401 触发浏览器 Basic Auth 弹窗
+        if credentials is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Not authenticated",
+                headers={"WWW-Authenticate": "Basic"},
+            )
         _verify_auth(credentials)
 
     # 生成指标数据

@@ -30,8 +30,11 @@ htmlcov/
 # IDE 与编辑器
 .vscode/
 .idea/
+.trae/
+.claude/
 *.swp
 *.swo
+*.iml
 *~
 
 # 版本控制

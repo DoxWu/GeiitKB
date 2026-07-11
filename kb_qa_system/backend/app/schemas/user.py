@@ -141,6 +141,7 @@ class UserLogin(BaseModel):
 
     作用：
         定义登录接口的请求体格式。
+        username 字段同时支持用户名和邮箱（前端 LoginForm 传入邮箱）。
 
     使用场景：
         POST /api/v1/auth/login
@@ -150,10 +151,16 @@ class UserLogin(BaseModel):
             "username": "zhangsan",
             "password": "Secure123"
         }
+        或使用邮箱登录：
+        {
+            "username": "zhangsan@example.com",
+            "password": "Secure123"
+        }
     """
-    # 用户名和密码添加 max_length 限制
+    # 登录标识：用户名或邮箱
+    # max_length=100 对齐 User.email 字段长度，支持邮箱登录
     # 作用：防止超长输入导致 bcrypt 计算 DoS（bcrypt 对超长输入有性能问题）
-    username: str = Field(..., min_length=1, max_length=50, description="用户名")
+    username: str = Field(..., min_length=1, max_length=100, description="用户名或邮箱")
     password: str = Field(..., min_length=1, max_length=100, description="密码")
 
 

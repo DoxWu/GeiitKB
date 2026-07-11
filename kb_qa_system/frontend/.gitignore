@@ -38,11 +38,16 @@ coverage/
 .vscode/*
 !.vscode/extensions.json
 .idea/
+.trae/
+.claude/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# TypeScript 增量构建缓存
+*.tsbuildinfo
 
 # 操作系统
 .DS_Store

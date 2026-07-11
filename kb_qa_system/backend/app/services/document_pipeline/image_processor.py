@@ -68,10 +68,11 @@ class ImageProcessor:
         初始化图片处理器
 
         作用：
-            懒加载 OCR 引擎和多模态客户端，避免启动时加载。
+            懒加载 OCR 引擎和多模态客户端管理器引用，避免启动时加载。
+            多模态客户端由 ModelProviderManager 统一管理（含重试/熔断/降级）。
         """
         self._tesseract_available: Optional[bool] = None
-        self._vision_client = None
+        self._manager = None
 
     # ============================================
     # 主入口
@@ -337,14 +338,14 @@ class ImageProcessor:
         使用多模态模型描述图片
 
         作用：
-            调用 GPT-4V 等多模态模型生成图片描述，
+            委托给 ModelProviderManager 管理的 VisionModelClient 生成图片描述，
             把图表、流程图等可视化信息转为文本。
+            客户端内部已处理重试+熔断+超时+降级。
 
         实现方式：
-            1. 懒加载 OpenAI 客户端
-            2. 将图片编码为 base64
-            3. 调用 chat.completions 接口
-            4. 失败则返回空字符串（降级）
+            1. 通过 _get_vision_client() 获取健康的 Vision 客户端
+            2. 委托 client.describe_image() 生成描述
+            3. 失败则返回空字符串（降级，保持与原实现兼容）
 
         参数：
             image_path: str - 图片路径
@@ -357,41 +358,8 @@ class ImageProcessor:
             if client is None:
                 return ""
 
-            import base64
-
-            # 读取图片并编码为 base64
-            with open(image_path, "rb") as f:
-                image_data = base64.b64encode(f.read()).decode("utf-8")
-
-            # 获取图片扩展名确定 MIME 类型
-            ext = os.path.splitext(image_path)[1].lower().lstrip(".")
-            mime_map = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif"}
-            mime_type = mime_map.get(ext, "image/png")
-
-            # 调用多模态模型
-            from app.core.config import settings
-            response = client.chat.completions.create(
-                model=settings.VISION_MODEL_NAME,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": self._VISION_PROMPT},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime_type};base64,{image_data}"
-                                },
-                            },
-                        ],
-                    }
-                ],
-                max_tokens=500,
-                temperature=0.3,
-            )
-
-            description = response.choices[0].message.content.strip()
-            return description
+            # 委托给 VisionModelClient（内部已处理 base64 编码、MIME 类型、重试、熔断）
+            return client.describe_image(image_path, prompt=self._VISION_PROMPT)
 
         except Exception as e:
             logger.debug(f"多模态描述失败（{image_path}）: {e}")
@@ -399,33 +367,22 @@ class ImageProcessor:
 
     def _get_vision_client(self):
         """
-        获取多模态模型客户端（懒加载）
+        获取多模态模型客户端（通过 ModelProviderManager）
 
         作用：
-            首次调用时创建 OpenAI 客户端，复用避免重复创建。
-            API Key 未配置时返回 None，跳过多模态描述。
+            通过 manager 获取当前健康的 Vision 客户端。
+            manager 内部由 FailoverRouter 按熔断器状态选择端点。
+            无可用端点时返回 None，跳过多模态描述。
 
         返回:
-            OpenAI 客户端实例或 None
+            VisionModelClient 实例或 None
         """
-        if self._vision_client is not None:
-            return self._vision_client
+        if self._manager is None:
+            from app.core.model_provider import get_model_manager
+            self._manager = get_model_manager()
 
         try:
-            from app.core.config import settings
-            if not settings.OPENAI_API_KEY:
-                logger.warning("OPENAI_API_KEY 未配置，多模态描述将被跳过")
-                return None
-
-            from openai import OpenAI
-            self._vision_client = OpenAI(
-                api_key=settings.OPENAI_API_KEY,
-                base_url=settings.OPENAI_API_BASE,
-            )
-            logger.info("多模态客户端已初始化")
-
+            return self._manager.get_vision_client()
         except Exception as e:
-            logger.warning(f"多模态客户端初始化失败: {e}")
-            self._vision_client = None
-
-        return self._vision_client
+            logger.debug(f"无可用多模态客户端: {e}")
+            return None

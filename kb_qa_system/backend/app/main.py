@@ -202,6 +202,24 @@ async def lifespan(app: FastAPI):
         init_app_info()
         logger.info("✅ Prometheus 指标已启用（/metrics）")
 
+    # 4. 初始化模型提供者管理器
+    # 作用：加载 providers.yaml 配置，创建所有模型客户端（文本/向量/多模态）并注册
+    #       支持多 API 部署方案，主模型和降级模型可独立配置不同端点
+    try:
+        from app.core.model_provider import get_model_manager
+        _model_manager = get_model_manager()
+        _model_manager.initialize()
+        logger.info("✅ 模型提供者管理器已初始化")
+
+        # 5. 启动模型服务健康检查
+        # 作用：后台 asyncio Task 定时探测各端点可用性，结果喂入熔断器
+        #       熔断器状态驱动 FailoverRouter 的降级路由决策
+        await _model_manager.start_health_checks()
+        logger.info("✅ 模型服务健康检查已启动")
+    except Exception as e:
+        logger.error(f"❌ 模型提供者管理器初始化失败: {e}")
+        # 不阻止启动——manager 内部有 _ensure_initialized() 懒加载兜底
+
     logger.info(f"🎉 应用启动成功！环境: {settings.ENVIRONMENT}")
     if settings.DEBUG:
         logger.info(f"📚 API 文档: http://localhost:8000/docs")
@@ -216,6 +234,16 @@ async def lifespan(app: FastAPI):
     #       滚动部署时旧实例连接残留，耗尽连接池导致新实例启动失败
     # 实现：每个清理独立 try/except，单个失败不影响其他清理
     logger.info("👋 应用关闭中...")
+
+    # 0. 关闭模型提供者管理器
+    # 作用：停止健康检查后台任务，释放所有模型客户端资源
+    # 必须最先执行：停止后台探测任务，避免清理过程中仍在发起 API 调用
+    try:
+        from app.core.model_provider import get_model_manager
+        await get_model_manager().shutdown()
+        logger.info("模型提供者管理器已关闭")
+    except Exception as e:
+        logger.error(f"关闭模型提供者管理器失败: {e}")
 
     # 1. 关闭 Redis 连接池
     try:

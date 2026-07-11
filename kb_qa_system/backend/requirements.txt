@@ -101,6 +101,7 @@ aiosmtplib==3.0.2          # 异步 SMTP 客户端，适配 Celery + FastAPI 双
 structlog==24.4.0         # 结构化日志
 sentry-sdk==2.14.0        # 错误监控（可选）
 prometheus-client==0.20.0 # 指标导出（可选）
+PyYAML==6.0.2             # 模型服务配置文件解析（providers.yaml）
 
 # ============================================
 # 部署

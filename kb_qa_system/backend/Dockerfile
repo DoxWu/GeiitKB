@@ -90,20 +90,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 从构建阶段复制虚拟环境（依赖与源码分离的关键）
-COPY --from=builder /opt/venv /opt/venv
+# 创建非 root 用户（在 COPY 之前，以便使用 --chown 直接设置属主）
+# 修复 P-05：此前先 COPY 再 chown -R /app /opt/venv，chown 会复制整个 venv 层（~6GB）
+#            改为 COPY --chown 在复制时直接设置属主，消除冗余层，镜像瘦身约 6GB
+RUN groupadd -r kbapp && useradd -r -g kbapp -d /app -s /sbin/nologin kbapp
+
+# 从构建阶段复制虚拟环境（直接设置属主，避免后续 chown 层）
+COPY --chown=kbapp:kbapp --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
 
-# 复制应用源码
+# 复制应用源码（直接设置属主）
 # 作用：源码独立放在 /app，docker-compose 开发挂载 ./backend:/app 不影响 /opt/venv
-COPY . /app/
+COPY --chown=kbapp:kbapp . /app/
 
-# 赋予入口脚本执行权限 + 创建非 root 用户
+# 赋予入口脚本执行权限
 # 注意：Windows 宿主 COPY 不保留执行位，需显式 chmod
-RUN chmod +x /app/entrypoint.sh && \
-    groupadd -r kbapp && useradd -r -g kbapp -d /app -s /sbin/nologin kbapp && \
-    chown -R kbapp:kbapp /app /opt/venv
+# 此 RUN 仅修改 entrypoint.sh 的权限位，不涉及 /opt/venv 的大规模 chown
+RUN chmod +x /app/entrypoint.sh
 USER kbapp
 
 # 暴露端口：FastAPI 8000，Flower 5555

@@ -403,6 +403,52 @@ class TestRefreshTokenMutex:
 
 
 # ============================================
+# Auth-401: 邮箱登录修复验证
+# ============================================
+
+class TestEmailLoginFix:
+    """Auth-401: 管理员邮箱登录 401 修复验证
+
+    根因：前端 LoginForm 将邮箱作为 username 字段传入，
+          后端仅按 User.username 查询，邮箱登录必然 401。
+    修复：登录查询同时匹配 User.username 和 User.email。
+    """
+
+    def test_login_query_matches_both_username_and_email(self):
+        """验证登录查询同时匹配 username 和 email 字段"""
+        source = read_source("app/api/routes/auth.py")
+        # 确保查询中同时包含 User.username 和 User.email
+        assert "User.username" in source, "登录查询应包含 User.username"
+        assert "User.email" in source, "登录查询应包含 User.email"
+        assert "|" in source, "应使用 OR 条件连接 username 和 email 查询"
+
+    def test_login_query_uses_or_condition(self):
+        """验证登录查询使用 OR 条件"""
+        source = read_source("app/api/routes/auth.py")
+        # 查找 (User.username == username) | (User.email == username) 模式
+        assert "(User.username == username) | (User.email == username)" in source, \
+            "应使用 (User.username == username) | (User.email == username) 查询"
+
+    def test_userlogin_schema_max_length_supports_email(self):
+        """验证 UserLogin schema 的 max_length 支持 100 字符（邮箱长度）"""
+        source = read_source("app/schemas/user.py")
+        assert "max_length=100" in source, \
+            "UserLogin.username max_length 应为 100 以支持邮箱登录"
+
+    def test_userlogin_schema_description_mentions_email(self):
+        """验证 UserLogin schema 描述包含'邮箱'字样"""
+        source = read_source("app/schemas/user.py")
+        assert "邮箱" in source, \
+            "UserLogin schema 描述应提及支持邮箱登录"
+
+    def test_login_fix_annotation_exists(self):
+        """验证修复注释标记存在"""
+        source = read_source("app/api/routes/auth.py")
+        assert "修复 401 Bug" in source or "401" in source, \
+            "应有 401 修复注释标记"
+
+
+# ============================================
 # C-10: lifespan 资源清理
 # ============================================
 

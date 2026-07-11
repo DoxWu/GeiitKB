@@ -1,0 +1,174 @@
+# ============================================
+# GeiIt企业知识库 - 模型服务配置文件
+# ============================================
+# 作用：定义文本/向量/多模态模型的主备端点，支持不同 API 提供商和本地部署
+#
+# 环境变量覆盖规则：
+#   ${VAR}            - 取环境变量 VAR 的值（不存在则为空串）
+#   ${VAR:default}    - 取环境变量 VAR 的值，不存在时用 default
+#   ${VAR:${OTHER}}   - 嵌套引用：VAR 不存在时取 OTHER 的值
+#
+# 优先级（从高到低）：
+#   1. 系统环境变量（Railway 注入）
+#   2. .env 文件
+#   3. YAML 中的 ${VAR:default} 默认值
+#   4. YAML 字面值
+#
+# 兼容性说明：
+#   默认值完全兼容现有 .env 配置，现有环境变量无需任何改动即可工作。
+#   新增的可选变量（如 LLM_FALLBACK_API_KEY）不设置时与现状一致。
+
+# ============================================
+# 全局默认参数（可被各 provider 覆盖）
+# ============================================
+defaults:
+  timeout: 30
+  max_retries: 3
+  retry_base_delay: 1.0
+  stream_first_token_timeout: 5
+  circuit_breaker_threshold: 5
+  circuit_breaker_recovery_time: 60
+
+# ============================================
+# 模型服务定义
+# ============================================
+# 每种 model_type 含一个有序列表：
+#   [0] 为主模型（优先使用）
+#   [1+] 为降级模型（主模型不可用时按序尝试）
+# 路由器按顺序选择第一个熔断器未打开的端点。
+providers:
+
+  # ===== 文本 LLM 模型 =====
+  llm:
+    # 主模型
+    - name: "primary"
+      type: openai
+      model: "${LLM_MODEL_NAME:gpt-3.5-turbo}"
+      api_key: "${OPENAI_API_KEY}"
+      api_base: "${OPENAI_API_BASE:https://api.openai.com/v1}"
+      temperature: 0.1
+      timeout: "${LLM_TIMEOUT:30}"
+      max_retries: "${LLM_MAX_RETRIES:3}"
+      retry_base_delay: "${LLM_RETRY_BASE_DELAY:1.0}"
+      stream_first_token_timeout: "${LLM_STREAM_FIRST_TOKEN_TIMEOUT:5}"
+      enabled: true
+      health_check:
+        enabled: true
+        interval: 60
+        timeout: 10
+      tags: ["primary", "cloud"]
+
+    # 降级模型（支持独立 API 配置，不设置则复用主 API）
+    - name: "fallback"
+      type: openai
+      model: "${LLM_FALLBACK_MODEL_NAME:gpt-3.5-turbo}"
+      api_key: "${LLM_FALLBACK_API_KEY:${OPENAI_API_KEY}}"
+      api_base: "${LLM_FALLBACK_API_BASE:${OPENAI_API_BASE}}"
+      temperature: 0.1
+      timeout: "${LLM_TIMEOUT:30}"
+      max_retries: 1
+      retry_base_delay: "${LLM_RETRY_BASE_DELAY:1.0}"
+      stream_first_token_timeout: "${LLM_STREAM_FIRST_TOKEN_TIMEOUT:5}"
+      enabled: "${LLM_FALLBACK_ENABLED:true}"
+      health_check:
+        enabled: true
+        interval: 60
+        timeout: 10
+      tags: ["fallback", "cloud"]
+
+    # 可选：本地 LLM 兜底（如 Ollama），默认关闭
+    - name: "local_fallback"
+      type: local_ollama
+      model: "${LOCAL_LLM_MODEL:qwen2.5:7b}"
+      api_base: "${LOCAL_LLM_BASE:http://localhost:11434/v1}"
+      api_key: "ollama"
+      temperature: 0.1
+      timeout: 60
+      max_retries: 1
+      enabled: "${LOCAL_LLM_ENABLED:false}"
+      health_check:
+        enabled: false
+      tags: ["fallback", "local"]
+
+  # ===== Embedding 向量模型 =====
+  embedding:
+    # 主模型（在线 API）
+    # 注意：若主 API（如 DeepSeek）不提供 /embeddings 端点，健康探测会失败并
+    #       自动降级到 cloud_fallback 端点，不影响业务功能。
+    - name: "primary"
+      type: openai
+      model: "${EMBEDDING_MODEL_NAME:text-embedding-ada-002}"
+      api_key: "${OPENAI_API_KEY}"
+      api_base: "${OPENAI_API_BASE:https://api.openai.com/v1}"
+      dimension: "${EMBEDDING_DIMENSION:1536}"
+      timeout: "${EMBEDDING_TIMEOUT:15}"
+      max_retries: 2
+      enabled: true
+      health_check:
+        enabled: true
+        interval: 60
+        timeout: 10
+      tags: ["primary", "cloud"]
+
+    # 云端降级模型（复用 LLM 降级 API，如阿里云兼容模式）
+    # 作用：主 API 不支持 embedding 时（如 DeepSeek），自动切换到支持 embedding 的云 API
+    - name: "cloud_fallback"
+      type: openai
+      model: "${EMBEDDING_FALLBACK_MODEL_NAME:${EMBEDDING_MODEL_NAME:text-embedding-ada-002}}"
+      api_key: "${EMBEDDING_FALLBACK_API_KEY:${LLM_FALLBACK_API_KEY:${OPENAI_API_KEY}}}"
+      api_base: "${EMBEDDING_FALLBACK_API_BASE:${LLM_FALLBACK_API_BASE:${OPENAI_API_BASE}}}"
+      dimension: "${EMBEDDING_DIMENSION:1536}"
+      timeout: "${EMBEDDING_TIMEOUT:15}"
+      max_retries: 2
+      enabled: "${LLM_FALLBACK_ENABLED:true}"
+      health_check:
+        enabled: true
+        interval: 60
+        timeout: 10
+      tags: ["fallback", "cloud"]
+
+    # 本地兜底模型（在线不可用时使用）
+    - name: "local_fallback"
+      type: local_hf
+      model: "${LOCAL_EMBEDDING_MODEL:BAAI/bge-small-zh-v1.1}"
+      dimension: 512
+      timeout: 30
+      max_retries: 1
+      enabled: "${LOCAL_EMBEDDING_ENABLED:true}"
+      health_check:
+        enabled: false
+      tags: ["fallback", "local"]
+
+  # ===== Vision 多模态模型 =====
+  vision:
+    # 主模型
+    - name: "primary"
+      type: openai
+      model: "${VISION_MODEL_NAME:gpt-4o-mini}"
+      api_key: "${OPENAI_API_KEY}"
+      api_base: "${OPENAI_API_BASE:https://api.openai.com/v1}"
+      timeout: 30
+      max_retries: 2
+      max_tokens: 500
+      temperature: 0.3
+      enabled: "${ENABLE_VISION:true}"
+      health_check:
+        enabled: true
+        interval: 120
+        timeout: 15
+      tags: ["primary", "cloud"]
+
+    # 可选：降级 Vision API
+    - name: "fallback"
+      type: openai
+      model: "${VISION_FALLBACK_MODEL:gpt-4o-mini}"
+      api_key: "${VISION_FALLBACK_API_KEY:${OPENAI_API_KEY}}"
+      api_base: "${VISION_FALLBACK_API_BASE:${OPENAI_API_BASE}}"
+      timeout: 30
+      max_retries: 1
+      max_tokens: 500
+      temperature: 0.3
+      enabled: "${VISION_FALLBACK_ENABLED:false}"
+      health_check:
+        enabled: false
+      tags: ["fallback", "cloud"]

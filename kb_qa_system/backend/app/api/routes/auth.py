@@ -229,8 +229,13 @@ def login(
     # 抛出 423 异常（在函数内部）
     check_login_lock(username)
 
-    # 查询用户
-    user = db.query(User).filter(User.username == username).first()
+    # 查询用户（支持用户名或邮箱登录）
+    # 修复 401 Bug：前端 LoginForm 将邮箱作为 username 字段传入，
+    #              原实现仅按 User.username 查询，邮箱登录必然 401。
+    #              改为同时匹配 username 和 email 字段，兼容两种登录方式。
+    user = db.query(User).filter(
+        (User.username == username) | (User.email == username)
+    ).first()
 
     # 时序攻击防护：即使用户不存在也执行 bcrypt 验证
     # 作用：原实现 bool(user) and verify_password(...) 会短路，

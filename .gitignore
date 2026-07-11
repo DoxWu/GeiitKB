@@ -130,6 +130,10 @@ data/
 *.iml
 *.iws
 *.ipr
+# Trae IDE（工作目录、生成文档等）
+.trae/
+# Claude IDE
+.claude/
 # Sublime Text
 *.sublime-project
 *.sublime-workspace

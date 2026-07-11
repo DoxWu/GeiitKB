@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.redis import RedisManager, RedisKeys
-from app.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError, get_circuit_breaker
+from app.core.circuit_breaker import CircuitBreakerOpenError
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 
@@ -57,67 +57,23 @@ class VectorStoreService:
         初始化向量存储服务
 
         作用：
-            创建 Embedding 模型实例和熔断器。
+            获取模型提供者管理器引用，不再直接创建 Embedding 模型实例。
 
         实现方式：
-            1. 创建在线 Embedding 模型（OpenAI）
-            2. 懒加载本地兜底模型（避免启动时加载大模型）
-            3. 创建 Embedding 服务的熔断器（在线 API 持续失败时快速降级到本地）
+            - 通过 get_model_manager() 获取全局管理器（懒加载单例）
+            - Embedding 客户端（在线/本地）、熔断器、降级路由由 manager 统一管理
+            - 保留 Redis 缓存逻辑在本类中（缓存是业务层关注点，不属于模型层）
         """
-        # 在线 Embedding 模型
-        # 作用：将文本转换为向量
-        self._online_embeddings = None
-
-        # 本地兜底 Embedding 模型
-        # 作用：在线 Embedding 不可用时使用
-        self._local_embeddings = None
-
-        # Embedding 服务熔断器
-        # 作用：在线 Embedding API 持续失败时，快速降级到本地模型，避免反复超时
-        self.embedding_breaker: CircuitBreaker = get_circuit_breaker("embedding")
+        from app.core.model_provider import get_model_manager
+        self._manager = get_model_manager()
 
     # ============================================
     # Embedding 模型管理
     # ============================================
 
-    @property
-    def online_embeddings(self):
-        """
-        获取在线 Embedding 模型（懒加载）
-
-        作用：
-            首次访问时创建 OpenAI Embedding 模型实例。
-        """
-        if self._online_embeddings is None:
-            from langchain_openai import OpenAIEmbeddings
-            self._online_embeddings = OpenAIEmbeddings(
-                model=settings.EMBEDDING_MODEL_NAME,
-                openai_api_key=settings.OPENAI_API_KEY,
-                openai_api_base=settings.OPENAI_API_BASE,
-                request_timeout=settings.EMBEDDING_TIMEOUT,
-            )
-        return self._online_embeddings
-
-    @property
-    def local_embeddings(self):
-        """
-        获取本地兜底 Embedding 模型（懒加载）
-
-        作用：
-            在线 Embedding 不可用时，使用本地模型兜底。
-            避免服务完全瘫痪。
-        """
-        if self._local_embeddings is None:
-            try:
-                from langchain_community.embeddings import HuggingFaceEmbeddings
-                self._local_embeddings = HuggingFaceEmbeddings(
-                    model_name=settings.LOCAL_EMBEDDING_MODEL,
-                )
-                logger.info(f"本地 Embedding 模型已加载: {settings.LOCAL_EMBEDDING_MODEL}")
-            except Exception as e:
-                logger.error(f"加载本地 Embedding 模型失败: {e}")
-                self._local_embeddings = None
-        return self._local_embeddings
+    # 注：online_embeddings 和 local_embeddings 属性已移除
+    # 作用：Embedding 客户端由 ModelProviderManager 统一管理
+    # 降级路由由 FailoverRouter 基于 CircuitBreaker 状态自动决策
 
     def generate_embedding(self, text: str) -> tuple[Optional[List[float]], str]:
         """
@@ -125,13 +81,16 @@ class VectorStoreService:
 
         作用：
             将文本转换为向量（Embedding），用于向量化存储和相似度检索。
-            支持在线模型和本地兜底模型。
+            委托给 ModelProviderManager 管理的 EmbeddingModelClient，支持降级路由。
 
         实现方式：
             1. 先查 Redis 缓存，命中则直接返回
-            2. 调用在线 Embedding 模型
-            3. 在线失败则降级到本地模型
-            4. 缓存结果到 Redis
+            2. 从 manager 获取 (primary, fallbacks) 客户端列表
+            3. 遍历列表，依次尝试 embed_query()
+               - 客户端内部已处理熔断+重试
+               - FailoverRouter 已按熔断器状态排序（健康者优先）
+            4. 成功 → 缓存结果 → 返回 (向量, 模型名)
+            5. 全部失败 → 返回 (None, "none")
 
         参数：
             text: str - 要向量化的文本
@@ -152,13 +111,26 @@ class VectorStoreService:
         if cached and isinstance(cached, dict):
             return cached.get("vector"), cached.get("model", "cached")
 
-        # 2. 调用在线 Embedding（带熔断器保护）
-        # 作用：熔断器打开时跳过在线 API，直接用本地模型，避免反复超时
-        if not self.embedding_breaker.is_open():
+        # 2. 从 manager 获取主客户端 + 降级客户端列表
+        # 作用：FailoverRouter 按熔断器状态选择健康端点，主模型健康时永远用主模型
+        from app.core.model_provider.exceptions import (
+            ModelInvocationError,
+            ModelClientUnavailableError,
+        )
+
+        try:
+            primary, fallbacks = self._manager.get_embedding_client_with_fallback()
+        except ModelClientUnavailableError:
+            logger.error("无可用 Embedding 客户端（未注册或全部 disabled）")
+            return None, "none"
+
+        all_clients = [primary] + list(fallbacks)
+
+        # 3. 遍历客户端列表，依次尝试
+        for client in all_clients:
             try:
-                vector = self.online_embeddings.embed_query(text)
-                model_used = settings.EMBEDDING_MODEL_NAME
-                self.embedding_breaker.record_success()
+                vector = client.embed_query(text)
+                model_used = client.config.model
 
                 # 缓存结果（7天过期）
                 RedisManager.set(
@@ -169,31 +141,23 @@ class VectorStoreService:
 
                 return vector, model_used
 
+            except CircuitBreakerOpenError:
+                # 此客户端熔断器打开，尝试下一个降级客户端
+                logger.info(f"Embedding 客户端({client.name})熔断器打开，尝试下一个")
+                continue
+
+            except ModelInvocationError as e:
+                # 此客户端调用失败，尝试下一个降级客户端
+                logger.warning(f"Embedding 客户端({client.name})失败: {e}，尝试下一个")
+                continue
+
             except Exception as e:
-                logger.warning(f"在线 Embedding 失败，降级到本地模型: {e}")
-                self.embedding_breaker.record_failure()
-        else:
-            logger.info("Embedding 熔断器打开，直接使用本地模型")
+                # 未知异常，尝试下一个降级客户端
+                logger.warning(f"Embedding 客户端({client.name})未知错误: {e}，尝试下一个")
+                continue
 
-        # 3. 降级到本地模型
-        # 作用：在线 API 不可用或熔断时，用本地模型兜底
-        if self.local_embeddings:
-            try:
-                vector = self.local_embeddings.embed_query(text)
-                model_used = settings.LOCAL_EMBEDDING_MODEL
-
-                # 缓存结果
-                RedisManager.set(
-                    cache_key,
-                    {"vector": vector, "model": model_used},
-                    ttl=7 * 24 * 3600
-                )
-
-                return vector, model_used
-            except Exception as e2:
-                logger.error(f"本地 Embedding 也失败: {e2}")
-
-        # 在线和本地都失败，返回 None
+        # 4. 所有端点均失败
+        logger.error(f"所有 Embedding 端点均失败: {[c.name for c in all_clients]}")
         return None, "none"
 
     # ============================================

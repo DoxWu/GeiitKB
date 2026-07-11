@@ -53,6 +53,12 @@ celery_app = Celery(
     ],  # 自动发现的任务模块
 )
 
+# 修复 P-04：显式启用启动时 broker 连接重试
+# 作用：Celery 5.4 中 broker_connection_retry 将在 6.0 弃用，
+#       改用 broker_connection_retry_on_startup 显式控制启动时的连接重试行为。
+#       设为 True 确保 Redis broker 不可用时 worker 启动会重试而非直接退出。
+celery_app.conf.broker_connection_retry_on_startup = True
+
 # ============================================
 # Celery 配置
 # ============================================
