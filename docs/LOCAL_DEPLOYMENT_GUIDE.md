@@ -321,6 +321,46 @@ npm run dev
 
 > **生产环境注意**：必须改为精确的前端域名，禁止使用通配符 `*`。
 
+#### 启动迁移控制（可选）
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `MIGRATE_ON_STARTUP` | API 容器启动时是否执行 `alembic upgrade head` | `true` |
+
+- **本地开发**：保持默认 `true`，API 启动时自动迁移，无需手动执行 `alembic upgrade head`
+- **已手动迁移**：如需跳过启动迁移（如调试启动流程），设为 `false`
+- **Railway 生产环境**：因 `railway.json` 已配置 `releaseCommand` 执行迁移，应设为 `false` 避免重复执行
+
+> 📖 详见 [entrypoint.sh](file:///c:/Users/DOXIA/Desktop/企业知识库问答系统/kb_qa_system/backend/entrypoint.sh) 中 `run_migrations()` 函数的实现。
+
+#### 多 API 降级配置（可选）
+
+系统支持 LLM 和 Embedding 的多级降级链路，当主 API 不可用时自动切换备用提供者。配置文件位于 [providers.yaml](file:///c:/Users/DOXIA/Desktop/企业知识库问答系统/kb_qa_system/backend/app/core/model_provider/providers.yaml)，环境变量优先级高于 YAML 默认值。
+
+**LLM 降级链路**：`primary`（主模型） → `fallback`（降级模型） → `local_fallback`（本地 Ollama）
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `LLM_FALLBACK_API_KEY` | 降级 LLM 的独立 API Key（不设则复用 `OPENAI_API_KEY`） | （空） |
+| `LLM_FALLBACK_API_BASE` | 降级 LLM 的 API 地址（不设则复用 `OPENAI_API_BASE`） | （空） |
+| `LLM_FALLBACK_ENABLED` | 是否启用降级 LLM | `true` |
+| `LOCAL_LLM_ENABLED` | 是否启用本地 LLM 兜底（Ollama） | `false` |
+| `LOCAL_LLM_MODEL` | 本地 LLM 模型名 | `qwen2.5:7b` |
+| `LOCAL_LLM_BASE` | Ollama API 地址 | `http://localhost:11434/v1` |
+
+**Embedding 降级链路**：`primary`（主模型） → `cloud_fallback`（云端备用） → `local_fallback`（HuggingFace 本地）
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `EMBEDDING_FALLBACK_API_KEY` | 云端备用 Embedding 的 API Key（不设则复用 `LLM_FALLBACK_API_KEY`） | （空） |
+| `EMBEDDING_FALLBACK_API_BASE` | 云端备用 Embedding 的 API 地址 | （空） |
+| `EMBEDDING_FALLBACK_MODEL_NAME` | 云端备用 Embedding 模型名 | （复用 `EMBEDDING_MODEL_NAME`） |
+| `LOCAL_EMBEDDING_ENABLED` | 是否启用本地 Embedding 兜底（HuggingFace，首次约 100MB） | `true` |
+
+> 💡 **嵌套占位符**：`providers.yaml` 使用 `${VAR1:${VAR2:${VAR3}}}` 语法实现三级回退。例如 Embedding 的 cloud_fallback 提供者：`${EMBEDDING_FALLBACK_API_KEY:${LLM_FALLBACK_API_KEY:${OPENAI_API_KEY}}}` 表示依次查找这三个变量。
+>
+> ⚠️ **DeepSeek 用户注意**：DeepSeek API **不支持** `/embeddings` 端点（仅 `/chat/completions`）。如使用 DeepSeek 作为主 LLM，必须配置 `EMBEDDING_FALLBACK_API_BASE` 指向支持 Embedding 的服务（如阿里云、OpenAI）。
+
 ### 4.2 前端配置（frontend/.env.local）
 
 | 变量 | 说明 | 开发环境 |
@@ -416,6 +456,8 @@ python -m scripts.create_superuser
 - 密码 ≥8 字符，必须包含字母和数字
 - 脚本幂等：已存在的管理员会提示跳过或升级
 - 密码使用 bcrypt 哈希存储
+
+> 💡 **登录说明**：系统登录端点同时支持**用户名**和**邮箱**登录。前端登录表单虽以邮箱字段呈现，但后端查询条件为 `User.username == input OR User.email == input`，因此创建管理员后既可用 `admin` 也可用 `admin@example.com` 登录。
 
 ---
 
@@ -523,12 +565,12 @@ curl http://localhost:8000/health
 # 后端测试
 cd kb_qa_system/backend
 pytest
-# 预期：38 passed
+# 预期：约 390+ passed（具体数量随版本更新，截至 2026-07-12 为 396 passed）
 
 # 前端测试
 cd kb_qa_system/frontend
 npx vitest run
-# 预期：473 passed
+# 预期：约 510+ passed（具体数量随版本更新，截至 2026-07-12 为 515 passed）
 
 # 前端类型检查
 npx tsc --noEmit
@@ -724,6 +766,29 @@ docker-compose logs worker | findstr email
 # 5. Resend 默认域 onboarding@resend.dev 只能发送到 ADMIN_NOTIFY_EMAIL
 #    发送给其他用户需验证自有域名
 ```
+
+### Q11: 使用邮箱登录返回 401
+
+**现象**：在前端登录页面使用邮箱登录，返回 `401 Unauthorized`
+
+**原因**：后端登录端点查询条件为 `(User.username == input) OR (User.email == input)`，同时支持用户名和邮箱。如遇 401，请按以下步骤排查：
+
+**排查步骤**：
+```bash
+# 1. 确认账号存在且邮箱匹配
+psql -d kb_qa -c "SELECT id, username, email, is_active FROM users WHERE email = 'your_email@example.com' OR username = 'your_email';"
+
+# 2. 确认账号已激活（is_active=true）
+# 3. 确认未触发登录失败锁定（5 次失败锁定 15 分钟）
+# 4. 确认密码正确（bcrypt 不可逆，只能重置）
+```
+
+**常见原因**：
+- 账号未激活：通过 `create_superuser.py` 创建的账号默认 `is_active=true`，但注册用户需管理员审批后激活
+- 密码错误：超过 5 次将锁定 15 分钟
+- 账号被禁用：管理员可通过数据库设置 `is_active=false`
+
+> 📖 详细排查流程见 [前端认证401调查报告.md](file:///c:/Users/DOXIA/Desktop/企业知识库问答系统/docs/前端认证401调查报告.md)
 
 ---
 

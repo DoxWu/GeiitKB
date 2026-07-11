@@ -209,6 +209,7 @@ Redis 用于：缓存、限流、Token 黑名单、Celery 任务队列。
 | `CELERY_BROKER_URL` | `${{Redis.REDIS_URL}}` | Celery 消息队列（复用 Redis） |
 | `CELERY_RESULT_BACKEND` | `${{Redis.REDIS_URL}}` | Celery 结果存储（复用 Redis） |
 | `CORS_ORIGINS` | `["https://你的前端域名.up.railway.app"]` | 允许的前端域名（**先填占位，第 6 步获取前端域名后更新**） |
+| `MIGRATE_ON_STARTUP` | `false` | **必须设为 `false`**：`railway.json` 已通过 `releaseCommand` 执行迁移，设为 `false` 避免启动时重复迁移（见 4.3 节） |
 
 **可选配置的变量**：
 
@@ -228,9 +229,11 @@ Redis 用于：缓存、限流、Token 黑名单、Celery 任务队列。
 
 ```json
 {
+  "$schema": "https://railway.app/railway.schema.json",
   "build": { "builder": "DOCKERFILE", "dockerfilePath": "Dockerfile" },
   "deploy": {
     "startCommand": "/app/entrypoint.sh",
+    "releaseCommand": "alembic upgrade head",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 60,
     "restartPolicyType": "ON_FAILURE",
@@ -239,17 +242,14 @@ Redis 用于：缓存、限流、Token 黑名单、Celery 任务队列。
 }
 ```
 
-- **启动命令**：`entrypoint.sh` 会自动执行 `alembic upgrade head`（数据库迁移），然后启动 uvicorn
+- **启动命令**：`entrypoint.sh` 根据 `ROLE` 环境变量启动不同服务（api/worker/flower）
+- **发布命令**：`releaseCommand` 在部署前执行 `alembic upgrade head`（数据库迁移），Railway 会确保迁移成功后才启动新版本
 - **健康检查**：访问 `/health` 端点，检查 API + 数据库 + Redis 连通性
 - **重启策略**：失败时自动重启（最多 5 次）
 
-> ⚠️ **10D 审查提醒（D9-01）**：`entrypoint.sh` 在每个 API 副本启动时执行迁移，**多副本并发部署时可能迁移冲突**。如果 Railway 后端服务配置了多副本（replicas > 1），建议改用 Railway 的 `releaseCommand` 执行迁移：
-> ```json
-> // railway.json deploy 部分新增：
-> "releaseCommand": "alembic upgrade head",
-> "releaseCommandTimeoutSecs": 60
-> ```
-> 同时从 `entrypoint.sh` 中移除迁移步骤（仅保留 uvicorn 启动），避免多副本重复执行迁移。
+> ✅ **D9-01 已实施**：`railway.json` 已配置 `releaseCommand: "alembic upgrade head"`，Railway 在部署前自动执行迁移。配合环境变量 `MIGRATE_ON_STARTUP=false`（见 4.2 节），`entrypoint.sh` 启动时会跳过迁移步骤，避免多副本并发迁移冲突。
+
+> ⚠️ **重要**：如使用 `releaseCommand`，**必须**在后端环境变量中设置 `MIGRATE_ON_STARTUP=false`，否则 `entrypoint.sh` 启动时会再次执行迁移（虽然 Alembic 幂等，但增加启动延迟且多副本仍有冲突风险）。
 
 #### 4.4 部署并验证
 
@@ -411,6 +411,8 @@ SELECT id, username, email, is_superuser FROM users WHERE username = 'your_usern
 > ⚠️ **注意**：不推荐直接用 SQL 创建新用户，因为密码需要 bcrypt 哈希。升级已有用户用 SQL 是安全的。
 
 **验证超级管理员**：用管理员账号登录前端，用户名旁会显示"管理员"标签。
+
+> 💡 **登录说明**：系统登录端点同时支持**用户名**和**邮箱**登录。前端登录表单虽以邮箱字段呈现，但后端查询条件为 `User.username == input OR User.email == input`。因此创建管理员后，既可用 `admin`（用户名）也可用 `admin@yourcompany.com`（邮箱）登录前端。
 
 #### 4.7 注册审批流程部署说明
 
@@ -655,6 +657,8 @@ curl -I https://你的前端域名
 ENVIRONMENT=production
 DEBUG=False
 PORT=8000
+# Railway 已通过 releaseCommand 执行迁移，跳过启动时迁移
+MIGRATE_ON_STARTUP=false
 
 # ===== 数据库 =====
 DATABASE_URL=${{Postgres.DATABASE_URL}}
@@ -775,6 +779,9 @@ ROLE=worker
 # ===== 应用配置 =====
 ENVIRONMENT=production
 DEBUG=False
+# Worker 角色不执行数据库迁移（entrypoint.sh 仅在 ROLE=api 时迁移）
+# MIGRATE_ON_STARTUP 对 Worker 无影响，但建议也设为 false 保持一致
+MIGRATE_ON_STARTUP=false
 
 # ===== 数据库 =====
 DATABASE_URL=${{Postgres.DATABASE_URL}}
@@ -822,6 +829,23 @@ LLM_TIMEOUT=30
 LLM_STREAM_FIRST_TOKEN_TIMEOUT=5
 CIRCUIT_BREAKER_THRESHOLD=5
 CIRCUIT_BREAKER_RECOVERY_TIME=60
+
+# ===== 多 API 降级配置（可选，推荐生产环境启用）=====
+# 作用：主 API 不可用时自动切换备用提供者，避免单点故障
+# 降级链路：primary → fallback → local_fallback
+# 配置文件：app/core/model_provider/providers.yaml
+# 优先级：环境变量 > .env > YAML 默认值 > YAML 字面值
+LLM_FALLBACK_API_KEY=
+LLM_FALLBACK_API_BASE=
+LLM_FALLBACK_ENABLED=true
+LOCAL_LLM_ENABLED=false
+LOCAL_LLM_MODEL=qwen2.5:7b
+LOCAL_LLM_BASE=http://localhost:11434/v1
+# Embedding 降级（cloud_fallback 提供者，复用 LLM_FALLBACK 配置）
+EMBEDDING_FALLBACK_API_KEY=
+EMBEDDING_FALLBACK_API_BASE=
+EMBEDDING_FALLBACK_MODEL_NAME=
+LOCAL_EMBEDDING_ENABLED=true
 
 # ===== 向量检索 =====
 SEARCH_TOP_K=4
@@ -1196,17 +1220,57 @@ UPDATE users SET is_superuser = true WHERE username = 'your_username';
 **症状**：后端 API 服务配置多副本（replicas > 1）时，部署日志出现 Alembic 迁移冲突错误
 
 **排查**：
-1. `entrypoint.sh` 在每个副本启动时执行 `alembic upgrade head`，多副本并发会导致迁移冲突
-2. **解决方案**：在 `railway.json` 中配置 `releaseCommand` 替代 entrypoint.sh 迁移：
-   ```json
-   "deploy": {
-     "releaseCommand": "alembic upgrade head",
-     "releaseCommandTimeoutSecs": 60,
-     "startCommand": "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
-   }
-   ```
-3. 同时修改 `entrypoint.sh`，移除迁移步骤（仅保留 uvicorn 启动）
-4. 详见 [10D 审查报告 D9-01](#) 和 [第 4.3 步](#43-确认部署配置)的提醒
+1. 确认 `railway.json` 已配置 `releaseCommand: "alembic upgrade head"`（**当前代码已配置**，Railway 会在部署前执行迁移）
+2. 确认后端环境变量 `MIGRATE_ON_STARTUP=false`（避免 `entrypoint.sh` 启动时重复迁移）
+3. 如果仍出现冲突，检查是否存在多个服务引用同一数据库且未设置 `MIGRATE_ON_STARTUP=false`
+
+**解决方案**：
+```json
+// railway.json（已配置，无需修改）
+"deploy": {
+  "releaseCommand": "alembic upgrade head",
+  "startCommand": "/app/entrypoint.sh"
+}
+```
+
+```bash
+# 后端环境变量（必须设置）
+MIGRATE_ON_STARTUP=false
+```
+
+> ✅ **当前状态**：`railway.json` 已配置 `releaseCommand`，`entrypoint.sh` 已支持 `MIGRATE_ON_STARTUP` 环境变量跳过迁移。只需确保环境变量正确设置即可，**无需修改代码**。
+
+### Q15：访问 `/metrics` 返回 422 VALIDATION_ERROR
+
+**症状**：访问 `https://你的后端域名/metrics` 返回 `422 Unprocessable Entity`，错误信息含 `VALIDATION_ERROR`
+
+**原因**：旧版本代码中 `/metrics` 端点使用 `Depends(None)`（当 `PROMETHEUS_AUTH_ENABLED=False` 时），FastAPI 会将 `None` 解析为查询参数，导致 422 验证错误
+
+**排查**：
+1. 确认后端代码版本已包含 P-02 修复（[metrics.py](file:///c:/Users/DOXIA/Desktop/企业知识库问答系统/kb_qa_system/backend/app/api/routes/metrics.py) 中使用 `Depends(_security)` 而非 `Depends(None)`）
+2. 确认 `ENABLE_PROMETHEUS=True`（默认 `False`，未启用时返回 404 是正常行为）
+
+**解决方案**：
+- 如代码版本过旧，更新到最新版本（P-02 已修复此问题）
+- 如已更新仍报错，检查 `PROMETHEUS_AUTH_ENABLED` 配置：
+  ```bash
+  # Railway
+  railway variables | grep PROMETHEUS
+  # 确认 ENABLE_PROMETHEUS=True
+  # 如需认证：PROMETHEUS_AUTH_ENABLED=True + 设置用户名密码
+  ```
+
+> 📖 P-02 修复详情见 [问题分级处理报告.md](file:///c:/Users/DOXIA/Desktop/企业知识库问答系统/docs/问题分级处理报告.md)
+
+### Q16：Celery Worker 启动时出现 broker_connection_retry 弃用警告
+
+**症状**：Worker 启动日志出现 `connection_retry` 相关的 DeprecationWarning
+
+**原因**：Celery 5.4+ 弃用了 `broker_connection_retry`，Celery 6.0 将完全移除
+
+**解决方案**：
+- 当前代码已在 [celery_app.py](file:///c:/Users/DOXIA/Desktop/企业知识库问答系统/kb_qa_system/backend/app/core/celery_app.py) 中设置 `broker_connection_retry_on_startup = True`（P-04 修复）
+- 如仍出现警告，确认 Celery 版本 ≥ 5.4，并检查代码是否包含该配置
 
 ---
 
