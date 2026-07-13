@@ -25,6 +25,7 @@ const { mockToastStore } = vi.hoisted(() => ({
   mockToastStore: {
     success: vi.fn(),
     error: vi.fn(),
+    apiError: vi.fn(),
   },
 }));
 
@@ -96,9 +97,9 @@ describe("CreateFolderModal 组件", () => {
     await user.click(screen.getByText("创建"));
 
     await vi.waitFor(() => {
-      expect(mockToastStore.error).toHaveBeenCalledWith(
+      expect(mockToastStore.apiError).toHaveBeenCalledWith(
         "创建失败",
-        "名称已存在",
+        expect.objectContaining({ message: "名称已存在" }),
       );
     });
     expect(onClose).not.toHaveBeenCalled();

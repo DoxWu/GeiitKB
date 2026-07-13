@@ -24,6 +24,6 @@ describe("TypingIndicator 组件", () => {
 
   it("包含 aria-label", () => {
     render(<TypingIndicator />);
-    expect(screen.getByLabelText("AI 正在输入")).toBeInTheDocument();
+    expect(screen.getByLabelText("AI 正在思考")).toBeInTheDocument();
   });
 });

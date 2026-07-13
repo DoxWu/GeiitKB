@@ -25,6 +25,9 @@ const { mockDocStore } = vi.hoisted(() => ({
     removeDocument: vi.fn(),
     reprocessDocument: vi.fn(),
     searchKeyword: "", // D2-02 搜索高亮所需（Task #143 新增）
+    selectionMode: false,
+    selectedDocIds: new Set<number>(),
+    toggleSelect: vi.fn(),
   },
 }));
 
@@ -32,6 +35,7 @@ const { mockToastStore } = vi.hoisted(() => ({
   mockToastStore: {
     success: vi.fn(),
     error: vi.fn(),
+    apiError: vi.fn(),
   },
 }));
 
@@ -195,7 +199,7 @@ describe("DocumentItem 组件", () => {
     await user.click(screen.getByLabelText("更多操作"));
     await user.click(screen.getByText("删除"));
     await vi.waitFor(() => {
-      expect(mockToastStore.error).toHaveBeenCalledWith("删除失败", "权限不足");
+      expect(mockToastStore.apiError).toHaveBeenCalledWith("删除失败", expect.objectContaining({ message: "权限不足" }));
     });
   });
 
@@ -218,7 +222,7 @@ describe("DocumentItem 组件", () => {
     await user.click(screen.getByLabelText("更多操作"));
     await user.click(screen.getByText("重新处理"));
     await vi.waitFor(() => {
-      expect(mockToastStore.error).toHaveBeenCalledWith("操作失败", "服务繁忙");
+      expect(mockToastStore.apiError).toHaveBeenCalledWith("操作失败", expect.objectContaining({ message: "服务繁忙" }));
     });
   });
 

@@ -23,6 +23,7 @@ const { mockToastStore } = vi.hoisted(() => ({
   mockToastStore: {
     success: vi.fn(),
     error: vi.fn(),
+    apiError: vi.fn(),
   },
 }));
 
@@ -219,9 +220,9 @@ describe("RegisterApplyForm 组件", () => {
     await user.click(screen.getByRole("button", { name: /提交注册申请/ }));
 
     await vi.waitFor(() => {
-      expect(mockToastStore.error).toHaveBeenCalledWith(
+      expect(mockToastStore.apiError).toHaveBeenCalledWith(
         "提交失败",
-        "邮箱已存在",
+        expect.objectContaining({ message: "邮箱已存在" }),
       );
     });
     expect(onSuccess).not.toHaveBeenCalled();

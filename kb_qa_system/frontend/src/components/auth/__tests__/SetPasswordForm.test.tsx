@@ -23,6 +23,7 @@ const { mockToastStore } = vi.hoisted(() => ({
   mockToastStore: {
     success: vi.fn(),
     error: vi.fn(),
+    apiError: vi.fn(),
   },
 }));
 
@@ -138,7 +139,7 @@ describe("SetPasswordForm 组件", () => {
     await user.click(screen.getByRole("button", { name: /设置密码/ }));
 
     await vi.waitFor(() => {
-      expect(mockToastStore.error).toHaveBeenCalledWith("设置失败", "链接已过期");
+      expect(mockToastStore.apiError).toHaveBeenCalledWith("设置失败", expect.objectContaining({ message: "链接已过期" }));
     });
     expect(onSuccess).not.toHaveBeenCalled();
   });

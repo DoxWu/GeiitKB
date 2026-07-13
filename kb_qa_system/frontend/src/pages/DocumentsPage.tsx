@@ -44,7 +44,6 @@ export default function DocumentsPage() {
     loadFolders,
     loadDocuments,
     selectFolder,
-    selectScope,
     setPage,
     stopAllPolling,
   } = useDocumentStore();

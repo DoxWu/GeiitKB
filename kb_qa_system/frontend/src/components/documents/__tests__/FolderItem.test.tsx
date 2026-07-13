@@ -29,6 +29,7 @@ const { mockToastStore } = vi.hoisted(() => ({
     success: vi.fn(),
     error: vi.fn(),
     warning: vi.fn(),
+    apiError: vi.fn(),
   },
 }));
 
@@ -228,7 +229,7 @@ describe("FolderItem 组件", () => {
     await user.click(screen.getByLabelText("更多操作"));
     await user.click(screen.getByText("删除"));
     await vi.waitFor(() => {
-      expect(mockToastStore.error).toHaveBeenCalledWith("删除失败", "删除失败");
+      expect(mockToastStore.apiError).toHaveBeenCalledWith("删除失败", expect.objectContaining({ message: "删除失败" }));
     });
   });
 

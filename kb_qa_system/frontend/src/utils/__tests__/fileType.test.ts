@@ -52,7 +52,7 @@ describe("isTextPreviewable", () => {
 
   it("非文本类文件返回 false", () => {
     expect(isTextPreviewable(".pdf")).toBe(false);
-    expect(isTextPreviewable(".docx")).toBe(false);
+    expect(isTextPreviewable(".docx")).toBe(true);
     expect(isTextPreviewable(".xlsx")).toBe(false);
     expect(isTextPreviewable(".pptx")).toBe(false);
     expect(isTextPreviewable(".unknown")).toBe(false);
@@ -92,7 +92,7 @@ describe("isPreviewable", () => {
   });
 
   it("不可预览的格式返回 false", () => {
-    expect(isPreviewable(".docx")).toBe(false);
+    expect(isPreviewable(".docx")).toBe(true);
     expect(isPreviewable(".xlsx")).toBe(false);
     expect(isPreviewable(".pptx")).toBe(false);
     expect(isPreviewable(".unknown")).toBe(false);

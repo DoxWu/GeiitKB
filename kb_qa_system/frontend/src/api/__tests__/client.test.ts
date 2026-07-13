@@ -15,7 +15,6 @@ import {
   storeTokens,
   updateTokens,
   clearTokens,
-  registerTokenExpiredCallback,
   refreshAccessToken,
   apiClient,
 } from "@/api/client";
@@ -160,7 +159,7 @@ describe("apiClient.post", () => {
     });
 
     await apiClient.post("/items", { name: "new item" });
-    const [url, options] = mockFetch.mock.calls[0];
+    const [, options] = mockFetch.mock.calls[0];
     expect(options.method).toBe("POST");
     expect(options.body).toBe(JSON.stringify({ name: "new item" }));
     expect(options.headers["Content-Type"]).toBe("application/json");

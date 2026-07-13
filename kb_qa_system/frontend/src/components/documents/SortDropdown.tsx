@@ -14,7 +14,7 @@ import { ArrowDownUp, ChevronDown, Check, ArrowUp, ArrowDown } from "lucide-reac
 import { useDocumentStore } from "@/store/documentStore";
 import { SORT_OPTIONS } from "@/utils/constants";
 import { cn } from "@/lib/utils";
-import type { SortField, SortOrder } from "@/types/document";
+import type { SortField } from "@/types/document";
 
 /** SortDropdown 组件 */
 export function SortDropdown() {

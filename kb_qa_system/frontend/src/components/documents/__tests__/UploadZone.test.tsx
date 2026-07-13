@@ -26,6 +26,7 @@ const { mockToastStore } = vi.hoisted(() => ({
     error: vi.fn(),
     warning: vi.fn(),
     info: vi.fn(),
+    apiError: vi.fn(),
   },
 }));
 
@@ -172,9 +173,9 @@ describe("UploadZone 组件", () => {
     uploadFile(input, file);
 
     await vi.waitFor(() => {
-      expect(mockToastStore.error).toHaveBeenCalledWith(
+      expect(mockToastStore.apiError).toHaveBeenCalledWith(
         "上传失败",
-        "网络错误",
+        expect.objectContaining({ message: "网络错误" }),
       );
     });
   });

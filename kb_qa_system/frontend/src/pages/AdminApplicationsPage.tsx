@@ -24,7 +24,6 @@ import {
   XCircle,
   Mail,
   User as UserIcon,
-  Calendar,
   ChevronLeft,
   ChevronRight,
   Loader2,

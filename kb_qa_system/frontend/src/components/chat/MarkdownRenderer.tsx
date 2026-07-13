@@ -122,6 +122,7 @@ export function MarkdownRenderer({ content, className }: MarkdownRendererProps) 
             />
           ),
           // 代码（区分内联/块级）
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- react-markdown 的 components.code 签名与自定义 CodeBlock 的 HTMLAttributes 不完全匹配，需 as any 桥接
           code: CodeBlock as any,
           // 代码块容器
           pre: ({ node, ...props }) => (

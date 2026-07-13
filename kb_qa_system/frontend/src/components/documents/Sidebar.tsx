@@ -28,7 +28,7 @@ import {
   Layers,
   Inbox,
 } from "lucide-react";
-import { Button, ThemeToggle } from "@/components/common";
+import { ThemeToggle } from "@/components/common";
 import { FolderItem } from "./FolderItem";
 import { CreateFolderModal } from "./CreateFolderModal";
 import { useDocumentStore } from "@/store/documentStore";

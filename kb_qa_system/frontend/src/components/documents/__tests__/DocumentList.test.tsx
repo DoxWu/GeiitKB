@@ -24,6 +24,12 @@ const { mockDocStore } = vi.hoisted(() => ({
     searchKeyword: "",
     loadDocuments: vi.fn(),
     clearError: vi.fn(),
+    selectionMode: false,
+    selectedDocIds: new Set<number>(),
+    toggleSelect: vi.fn(),
+    openPreview: vi.fn(),
+    removeDocument: vi.fn(),
+    reprocessDocument: vi.fn(),
   },
 }));
 

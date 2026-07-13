@@ -35,6 +35,7 @@ const { mockToastStore } = vi.hoisted(() => ({
   mockToastStore: {
     success: vi.fn(),
     error: vi.fn(),
+    apiError: vi.fn(),
   },
 }));
 
@@ -225,7 +226,7 @@ describe("DocumentPreview 组件", () => {
     render(<DocumentPreview />);
     await user.click(screen.getByText("删除文档"));
     await waitFor(() => {
-      expect(mockToastStore.error).toHaveBeenCalledWith("删除失败", "无权限");
+      expect(mockToastStore.apiError).toHaveBeenCalledWith("删除失败", expect.objectContaining({ message: "无权限" }));
     });
   });
 
@@ -256,7 +257,7 @@ describe("DocumentPreview 组件", () => {
     render(<DocumentPreview />);
     await user.click(screen.getByText("重新处理"));
     await waitFor(() => {
-      expect(mockToastStore.error).toHaveBeenCalledWith("操作失败", "服务不可用");
+      expect(mockToastStore.apiError).toHaveBeenCalledWith("操作失败", expect.objectContaining({ message: "服务不可用" }));
     });
   });
 
