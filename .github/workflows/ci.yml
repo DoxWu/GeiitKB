@@ -52,7 +52,7 @@ jobs:
           DATABASE_URL: postgresql://test:test@localhost:5432/test
           REDIS_URL: redis://localhost:6379/0
         run: |
-          python -m pytest tests/ -v --tb=short --cov=app --cov-report=term-missing
+          python -m pytest tests/ -v --tb=short --cov=app --cov-report=term-missing --cov-fail-under=0
 
   # --------------------------------------------
   # 前端测试

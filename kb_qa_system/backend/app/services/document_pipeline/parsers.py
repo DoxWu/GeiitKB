@@ -337,6 +337,7 @@ class UrlParser:
         #       完全禁止重定向会导致导入失败；但自动重定向有 SSRF 风险
         #       （重定向到内网地址），折中方案：手动获取 Location →
         #       SSRF 校验 → 递归调用，最多 3 次
+        #       未通过 SSRF 校验的重定向目标：禁止 URL 重定向到不安全地址
         if response.is_redirect or response.is_permanent_redirect:
             response.close()
 
