@@ -45,7 +45,9 @@ jobs:
 
       - name: Run tests
         env:
-          ENVIRONMENT: testing
+          # CI 使用 development 环境（config.py 仅允许 development/staging/production）
+          # development 下 SECRET_KEY 校验宽松，适合 CI 场景
+          ENVIRONMENT: development
           SECRET_KEY: ci-test-secret-key-not-for-production
           DATABASE_URL: postgresql://test:test@localhost:5432/test
           REDIS_URL: redis://localhost:6379/0
