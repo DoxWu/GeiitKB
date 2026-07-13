@@ -86,7 +86,7 @@ export function RegisterApplyForm({ onSuccess }: RegisterApplyFormProps) {
       toast.success("申请已提交", "请等待管理员审核");
       onSuccess?.(email);
     } catch (err) {
-      toast.error("提交失败", err instanceof Error ? err.message : "请重试");
+      toast.apiError("提交失败", err);
     } finally {
       setLoading(false);
     }

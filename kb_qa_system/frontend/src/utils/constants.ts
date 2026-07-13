@@ -44,6 +44,9 @@ export const API_PATHS = {
   DOCUMENT_REPROCESS: (id: number) => `/documents/${id}/reprocess`,
   // 修复 Issue 6：移动文档到其他分支
   DOCUMENT_MOVE: (id: number) => `/documents/${id}/move`,
+  // 批量操作（多选功能）
+  DOCUMENT_BATCH_DELETE: "/documents/batch-delete",
+  DOCUMENT_BATCH_MOVE: "/documents/batch-move",
   DOCUMENT_DETAIL: (id: number) => `/documents/${id}`,
   DOCUMENT_TASK_STATUS: (documentId: number) =>
     `/documents/${documentId}/task-status`,

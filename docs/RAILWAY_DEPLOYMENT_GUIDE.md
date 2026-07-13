@@ -24,7 +24,8 @@
 13. [备份策略](#备份策略)
 14. [回滚流程](#回滚流程)
 15. [部署检查清单](#部署检查清单)
-16. [常见问题排查](#常见问题排查)
+16. [性能调优](#性能调优)
+17. [常见问题排查](#常见问题排查)
 
 ---
 
@@ -1060,6 +1061,87 @@ alembic history
 - [ ] HTTPS 有效（Railway 自动配置）
 - [ ] 生产环境启动校验通过（日志无 "配置校验失败" 错误）
 - [ ] **`/metrics` 端点需 Basic Auth 认证**（未认证访问返回 401）
+
+---
+
+## 性能调优
+
+### Railway PostgreSQL 调优
+
+Railway 提供 managed PostgreSQL，**不支持**挂载自定义 `postgresql.conf` 或覆盖启动命令。需通过 `ALTER SYSTEM` 逐项设置参数。
+
+**执行方式**：在 Railway Dashboard → PostgreSQL 服务 → **Query** 标签页执行以下 SQL（一次性，持久化到 `postgresql.auto.conf`）：
+
+```sql
+-- Railway PostgreSQL 调优脚本
+-- 注意：参数值需按 Railway PG 套餐内存调整
+-- 共享 1G 套餐示例（Pro 8G 套餐请按比例放大）
+
+-- 内存与缓冲区
+ALTER SYSTEM SET shared_buffers = '128MB';           -- RAM 的 25%
+ALTER SYSTEM SET effective_cache_size = '384MB';     -- RAM 的 75%
+ALTER SYSTEM SET work_mem = '8MB';                   -- 排序/哈希内存
+ALTER SYSTEM SET maintenance_work_mem = '64MB';      -- VACUUM/索引构建
+
+-- 查询规划（SSD 优化）
+ALTER SYSTEM SET random_page_cost = 1.1;             -- SSD 随机读代价
+ALTER SYSTEM SET effective_io_concurrency = 200;     -- SSD 并发 IO
+
+-- 连接与超时
+ALTER SYSTEM SET max_connections = 50;               -- 匹配连接池配置
+ALTER SYSTEM SET idle_in_transaction_session_timeout = 60000;
+ALTER SYSTEM SET statement_timeout = 30000;
+
+-- 慢查询日志
+ALTER SYSTEM SET log_min_duration_statement = 1000;  -- 记录 >1s 慢查询
+
+-- 应用配置（部分参数需重启 PG 生效，Railway 会提示）
+SELECT pg_reload_conf();
+```
+
+> ⚠️ **限制说明**：
+> - `shared_buffers`、`max_connections` 等参数需重启 PG 生效（Railway Dashboard → PostgreSQL → Settings → Restart）
+> - `max_connections` 不能超过 Railway 套餐上限
+> - Railway Redis **不支持** `maxmemory-policy` 配置，已通过应用层 `RedisManager` 的 LRU 兜底
+
+### 连接池 Sizing 建议
+
+Railway 后端服务通常为单实例，DB 连接池配置建议：
+
+| Railway 套餐 | DB_POOL_SIZE | DB_MAX_OVERFLOW | 说明 |
+|--------------|--------------|-----------------|------|
+| Hobby（512M） | 5 | 10 | 单实例低并发 |
+| Pro（1G+） | 10 | 20 | 默认值，多并发 |
+| 多实例部署 | 5/实例 | 10/实例 | 避免多实例总连接数超 `max_connections` |
+
+在 Railway 后端服务 → **Variables** 中设置：
+
+```
+DB_POOL_SIZE=5
+DB_MAX_OVERFLOW=10
+DB_POOL_RECYCLE=1800
+```
+
+### 冷启动优化
+
+Railway 部署建议设置 `MODEL_EAGER_HEALTH_CHECK=False`（默认值），使应用启动后立即通过健康检查，避免 Railway 误判部署超时。
+
+在 Railway 后端服务 → **Variables** 中设置：
+
+```
+MODEL_EAGER_HEALTH_CHECK=False
+```
+
+> 💡 健康检查在后台异步启动，不阻塞应用就绪。首轮探测完成前熔断器默认 CLOSED（不熔断），首批请求会触发 `_ensure_initialized()` 懒加载兜底。
+
+### 前端资源加载优化
+
+前端已内置以下优化（无需额外配置）：
+
+1. **API 预连接**：`index.html` 通过 `<link rel="preconnect">` 预连接后端域名，减少首屏 DNS+TLS 握手（~100-200ms）。Vite 构建时自动从 `VITE_API_BASE_URL` 替换占位符。
+2. **modulePreload**：移除了不必要的 polyfill（~600 bytes），依赖浏览器原生 `modulepreload` 支持。
+3. **路由级懒加载**：除 LoginPage 和 NotFoundPage 外，所有页面使用 `React.lazy()` 按需加载。
+4. **静态资源长期缓存**：nginx 配置 `/assets/` 路径 `Cache-Control: public, immutable`，带 hash 文件名支持长期缓存。
 
 ---
 

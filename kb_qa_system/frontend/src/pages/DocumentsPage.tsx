@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Menu, Globe, Lock } from "lucide-react";
+import { Menu, Globe, Lock, CheckSquare } from "lucide-react";
 import { Sidebar } from "@/components/documents/Sidebar";
 import { DocumentList } from "@/components/documents/DocumentList";
 import { DocumentPreview } from "@/components/documents/DocumentPreview";
@@ -23,6 +23,7 @@ import { UploadZone } from "@/components/documents/UploadZone";
 import { Pagination } from "@/components/documents/Pagination";
 import { StatsPanel } from "@/components/documents/StatsPanel";
 import { UrlImportModal } from "@/components/documents/UrlImportModal";
+import { BatchActionBar } from "@/components/documents/BatchActionBar";
 import { Button } from "@/components/common/Button";
 import { useDocumentStore } from "@/store/documentStore";
 import { useAuthStore } from "@/store/authStore";
@@ -38,6 +39,8 @@ export default function DocumentsPage() {
     total,
     page,
     pageSize,
+    selectionMode,
+    enterSelectionMode,
     loadFolders,
     loadDocuments,
     selectFolder,
@@ -104,9 +107,12 @@ export default function DocumentsPage() {
     mine: "个人文档库",
     public: "公共文档库",
   };
+  // folder_id=0 表示"未分类"虚拟分支
   const currentFolderName =
     currentFolderId !== null
-      ? folders.find((f) => f.id === currentFolderId)?.name || "文档库"
+      ? currentFolderId === 0
+        ? "未分类"
+        : folders.find((f) => f.id === currentFolderId)?.name || "文档库"
       : scopeLabels[currentScope] || "全部文档";
 
   /** 是否为空列表（显示完整上传区） */
@@ -170,6 +176,18 @@ export default function DocumentsPage() {
             {/* 排序 */}
             <SortDropdown />
 
+            {/* 多选按钮（有文档时显示，多选模式下隐藏） */}
+            {!selectionMode && documents.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<CheckSquare className="h-4 w-4" />}
+                onClick={enterSelectionMode}
+              >
+                多选
+              </Button>
+            )}
+
             {/* 上传按钮 / 游客无权提交提示 */}
             {isGuest ? (
               <span
@@ -229,6 +247,8 @@ export default function DocumentsPage() {
             )
           ) : (
             <div className="mx-auto max-w-4xl space-y-4">
+              {/* 多选模式下的批量操作工具栏 */}
+              {selectionMode && <BatchActionBar />}
               {/* 文档统计面板 */}
               <StatsPanel />
               <DocumentList />

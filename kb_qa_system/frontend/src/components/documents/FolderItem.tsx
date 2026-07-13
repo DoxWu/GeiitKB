@@ -70,7 +70,7 @@ export function FolderItem({ folder, selected, onSelect }: FolderItemProps) {
       await deleteFolder(folder.id);
       toast.success("分支已删除");
     } catch (err) {
-      toast.error("删除失败", err instanceof Error ? err.message : undefined);
+      toast.apiError("删除失败", err);
     }
   }
 

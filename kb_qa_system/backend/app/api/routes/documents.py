@@ -43,6 +43,9 @@ from app.schemas.document import (
     TaskStatusResponse,
     DocumentProcessSummary,
     DocumentRenameRequest,
+    BatchDeleteRequest,
+    BatchMoveRequest,
+    BatchOperationResponse,
 )
 from app.services.document_processor import document_processor
 from app.services.permission import permission_service, VISIBILITY_PRIVATE, VISIBILITY_PUBLIC
@@ -403,10 +406,23 @@ def list_documents(
     # 修复 Issue 7：添加 folder_id 查询参数，实现分支文档隔离显示
     # 作用：此前 list_documents 不接受 folder_id，导致前端切换分支时仍返回所有文档，
     #       任意分支都能看见几乎所有文档。修复后按 folder_id 精确过滤。
-    #       - folder_id 传入具体值：仅返回该分支下的文档
+    #       - folder_id 传入具体值（≥1）：仅返回该分支下的文档
+    #       - folder_id=0：仅返回未分类文档（folder_id IS NULL），即"默认分支"
     #       - folder_id 未传（None）：保持原行为（不按分支过滤）
     folder_id: Optional[int] = Query(
-        None, ge=1, description="文档库分支ID（传入时仅返回该分支下的文档）"
+        None, ge=0, description="文档库分支ID（≥1 指定分支；0 表示未分类；不传则不过滤）"
+    ),
+    # 排序参数（修复排序失效问题：此前后端未接收 sort_by/sort_order，前端发送后被忽略）
+    # 作用：支持按创建时间/修改时间/文件名/文件类型排序，每字段支持升序/降序
+    sort_by: Optional[str] = Query(
+        None,
+        pattern=r"^(created_at|updated_at|file_name|file_type)$",
+        description="排序字段：created_at/updated_at/file_name/file_type",
+    ),
+    sort_order: Optional[str] = Query(
+        None,
+        pattern=r"^(asc|desc)$",
+        description="排序方向：asc 升序 / desc 降序",
     ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
@@ -435,11 +451,13 @@ def list_documents(
     查询参数：
         - page: 页码，默认 1（cursor 模式下忽略）
         - page_size: 每页数量，默认 10
-        - cursor: 游标（可选，传入时使用游标分页）
+        - cursor: 游标（可选，传入时使用游标分页；sort_by 传入时忽略 cursor）
         - search: 搜索关键词（标题全文检索）
         - status: 状态筛选（pending/processing/completed/failed/low_quality）
         - scope: 范围（accessible/mine/public）
-        - folder_id: 文档库分支ID（可选，传入时仅返回该分支下的文档）
+        - folder_id: 文档库分支ID（≥1 指定分支；0 表示未分类；不传则不过滤）
+        - sort_by: 排序字段（created_at/updated_at/file_name/file_type）
+        - sort_order: 排序方向（asc/desc）
 
     响应（200）：
         {
@@ -481,8 +499,13 @@ def list_documents(
     # 修复 Issue 7：分支文档隔离过滤
     # 作用：folder_id 传入时仅返回该分支下的文档，实现分支隔离显示
     # 注意：folder_id 来自前端当前选中的分支，未选中分支时为 None（显示全部）
+    # 扩展：folder_id=0 表示"未分类"（folder_id IS NULL），即默认分支
     if folder_id is not None:
-        query = query.filter(Document.folder_id == folder_id)
+        if folder_id == 0:
+            # 0 = 未分类：folder_id 为 NULL 的文档
+            query = query.filter(Document.folder_id.is_(None))
+        else:
+            query = query.filter(Document.folder_id == folder_id)
 
     # D2-01 全文检索：search 参数使用 to_tsvector + @@ 操作符
     # 作用：利用 PostgreSQL GIN 索引加速搜索，ilike 作为短词降级兼容
@@ -497,9 +520,24 @@ def list_documents(
     # 获取总数
     total = query.count()
 
-    # D4-02 游标分页：传入 cursor 时使用游标分页，否则保持 offset/limit（向后兼容）
+    # 排序字段白名单映射（防 SQL 注入：仅允许预定义字段）
+    # 作用：sort_by 经 Query pattern 校验后仍需映射到 ORM 列对象，避免字符串拼接
+    SORT_FIELD_MAP = {
+        "created_at": Document.created_at,
+        "updated_at": Document.updated_at,
+        "file_name": Document.file_name,
+        "file_type": Document.file_type,
+    }
+
+    # 构造 order_by 子句
+    # 作用：sort_by 未传时默认按 created_at desc（与前端默认一致），保证结果顺序稳定
+    sort_column = SORT_FIELD_MAP.get(sort_by, Document.created_at)
+    order_col = sort_column.desc() if sort_order != "asc" else sort_column.asc()
+
+    # D4-02 游标分页：传入 cursor 且未指定自定义排序时使用游标分页，否则 offset/limit
+    # 注意：游标分页仅支持 id DESC 排序，自定义排序（sort_by）时必须用 offset/limit
     next_cursor = None
-    if cursor:
+    if cursor and not sort_by:
         # 游标分页：WHERE id < cursor ORDER BY id DESC LIMIT page_size
         # 作用：避免 offset 深翻页性能退化
         query = query.filter(Document.id < cursor)
@@ -508,9 +546,10 @@ def list_documents(
         if len(documents) == page_size:
             next_cursor = documents[-1].id
     else:
-        # 原 offset 逻辑保持（向后兼容）
+        # offset/limit 分页（支持自定义排序）
+        # 作用：sort_by 传入时按指定字段排序；未传入时按默认 created_at desc
         offset = (page - 1) * page_size
-        documents = query.offset(offset).limit(page_size).all()
+        documents = query.order_by(order_col).offset(offset).limit(page_size).all()
 
     return {
         "items": documents,
@@ -925,7 +964,7 @@ def move_document(
 
 # 文本类文件扩展名集合
 # 作用：判断文件是否可直接以文本形式返回预览
-_TEXT_PREVIEW_TYPES = {"txt", "md", "csv", "json", "text", "markdown"}
+_TEXT_PREVIEW_TYPES = {"txt", "md", "csv", "json", "text", "markdown", "html", "htm"}
 
 # 文本预览最大字节数（10MB）
 # 作用：防止超大文本文件一次性读入内存导致 OOM
@@ -1177,6 +1216,229 @@ def rename_document(
     )
 
     return document
+
+
+# ============================================
+# 批量删除文档（多选功能）
+# ============================================
+
+@router.post(
+    "/batch-delete",
+    response_model=BatchOperationResponse,
+    summary="批量删除文档",
+)
+def batch_delete_documents(
+    body: BatchDeleteRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Any:
+    """
+    批量删除文档（软删除）
+
+    作用：
+        一次性软删除多个文档，减少前端逐个调用的网络开销。
+        逐个校验权限，无权操作的文档记入 failed 列表（不影响其他文档）。
+
+    请求体：
+        {"document_ids": [1, 2, 3]}
+
+    响应（200）：
+        {"success_count": 3, "failed": [], "total": 3}
+
+    错误：
+        400: document_ids 为空或超过 100 个
+    """
+    from datetime import datetime
+
+    doc_ids = body.document_ids
+    total = len(doc_ids)
+    success_count = 0
+    failed = []
+
+    # 逐个处理：权限隔离要求每个文档单独校验
+    # 作用：避免一个无权文档导致整批失败，提升用户体验
+    for doc_id in doc_ids:
+        # 权限校验：管理操作 = 自己上传的 / 超级管理员
+        if not permission_service.can_manage_document(
+            db, current_user.id, doc_id, current_user.is_superuser
+        ):
+            failed.append({"document_id": doc_id, "reason": "文档不存在或无权操作"})
+            continue
+
+        document = db.query(Document).filter(
+            Document.id == doc_id,
+            Document.is_deleted == False,
+        ).first()
+
+        if not document:
+            failed.append({"document_id": doc_id, "reason": "文档不存在"})
+            continue
+
+        # 超管操作他人文档记录审计日志
+        if current_user.is_superuser and document.user_id != current_user.id:
+            _audit_superuser_action(
+                action="delete",
+                superuser_id=current_user.id,
+                document_id=doc_id,
+                owner_id=document.user_id,
+            )
+
+        # 软删除：先 commit DB 再删向量（C-4 修复原则，与单删一致）
+        document.is_deleted = True
+        document.deleted_at = datetime.now()
+        document.status = "deleted"
+        db.commit()
+
+        # 删除向量分块（失败不影响主流程）
+        try:
+            from app.services.vector_store import get_vector_store
+            vector_store = get_vector_store()
+            vector_store.delete_document_chunks(doc_id)
+        except Exception as e:
+            logger.warning(f"批量删除：向量分块删除失败（doc_id={doc_id}）: {e}")
+
+        # 审计日志
+        audit_service.log(
+            db=db,
+            user_id=current_user.id,
+            action="document.batch_delete",
+            resource_type="document",
+            resource_id=doc_id,
+            detail={"title": document.title, "visibility": document.visibility},
+            request=request,
+        )
+
+        success_count += 1
+
+    logger.info(
+        f"批量删除完成: operator={current_user.id}, success={success_count}, "
+        f"failed={len(failed)}, total={total}"
+    )
+
+    return {
+        "success_count": success_count,
+        "failed": failed,
+        "total": total,
+    }
+
+
+# ============================================
+# 批量移动文档到分支（多选功能）
+# ============================================
+
+@router.post(
+    "/batch-move",
+    response_model=BatchOperationResponse,
+    summary="批量移动文档到分支",
+)
+def batch_move_documents(
+    body: BatchMoveRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Any:
+    """
+    批量移动文档到分支
+
+    作用：
+        一次性将多个文档移动到目标分支或移出分支（归入未分类）。
+        逐个校验权限，无权操作的文档记入 failed 列表。
+
+    请求体：
+        {"document_ids": [1, 2, 3], "folder_id": 5}
+        {"document_ids": [1, 2, 3], "folder_id": null}  # 移出分支
+
+    响应（200）：
+        {"success_count": 3, "failed": [], "total": 3}
+
+    错误：
+        400: 目标分支不存在或无权使用
+        400: document_ids 为空或超过 100 个
+    """
+    doc_ids = body.document_ids
+    target_folder_id = body.folder_id
+    total = len(doc_ids)
+    success_count = 0
+    failed = []
+
+    # 验证目标分支（如果指定了 folder_id）
+    # 作用：提前校验，避免逐个文档校验时重复查询
+    if target_folder_id is not None:
+        from app.models.document_folder import DocumentFolder
+        target_folder = db.query(DocumentFolder).filter(
+            DocumentFolder.id == target_folder_id,
+        ).first()
+        if not target_folder:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": {"code": "FOLDER_NOT_FOUND", "message": "目标分支不存在"}},
+            )
+        # 分支是用户私有的，只能移动到自己的分支（超管例外）
+        if target_folder.user_id != current_user.id and not current_user.is_superuser:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": {"code": "FOLDER_ACCESS_DENIED", "message": "无权使用该分支"}},
+            )
+
+    # 逐个处理：权限隔离要求每个文档单独校验
+    for doc_id in doc_ids:
+        if not permission_service.can_manage_document(
+            db, current_user.id, doc_id, current_user.is_superuser
+        ):
+            failed.append({"document_id": doc_id, "reason": "文档不存在或无权操作"})
+            continue
+
+        document = db.query(Document).filter(
+            Document.id == doc_id,
+            Document.is_deleted == False,
+        ).first()
+
+        if not document:
+            failed.append({"document_id": doc_id, "reason": "文档不存在"})
+            continue
+
+        # 超管操作他人文档记录审计日志
+        if current_user.is_superuser and document.user_id != current_user.id:
+            _audit_superuser_action(
+                action="move",
+                superuser_id=current_user.id,
+                document_id=doc_id,
+                owner_id=document.user_id,
+                extra={"target_folder_id": target_folder_id},
+            )
+
+        # 更新 folder_id
+        document.folder_id = target_folder_id
+        db.commit()
+
+        success_count += 1
+
+    # 审计日志：记录整批操作
+    audit_service.log(
+        db=db,
+        user_id=current_user.id,
+        action="document.batch_move",
+        resource_type="document",
+        resource_id=0,
+        detail={
+            "document_ids": doc_ids,
+            "target_folder_id": target_folder_id,
+            "success_count": success_count,
+        },
+        request=request,
+    )
+
+    logger.info(
+        f"批量移动完成: operator={current_user.id}, target_folder={target_folder_id}, "
+        f"success={success_count}, failed={len(failed)}, total={total}"
+    )
+
+    return {
+        "success_count": success_count,
+        "failed": failed,
+        "total": total,
+    }
 
 
 # ============================================

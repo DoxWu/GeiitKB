@@ -136,7 +136,7 @@ export function DocumentPreview() {
       await removeDocument(doc.id);
       toast.success("文档已删除");
     } catch (err) {
-      toast.error("删除失败", err instanceof Error ? err.message : undefined);
+      toast.apiError("删除失败", err);
     }
   }
 
@@ -146,7 +146,7 @@ export function DocumentPreview() {
       await reprocessDocument(doc.id);
       toast.success("已重新提交处理");
     } catch (err) {
-      toast.error("操作失败", err instanceof Error ? err.message : undefined);
+      toast.apiError("操作失败", err);
     }
   }
 

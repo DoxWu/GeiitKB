@@ -18,7 +18,8 @@
 7. [启动服务](#7-启动服务)
 8. [验证检查](#8-验证检查)
 9. [监控栈（可选）](#9-监控栈可选)
-10. [常见问题排查](#10-常见问题排查)
+10. [性能调优](#10-性能调优)
+11. [常见问题排查](#11-常见问题排查)
 
 ---
 
@@ -466,7 +467,11 @@ python -m scripts.create_superuser
 ### 7.1 Docker Compose 方式启动顺序
 
 ```bash
+# 默认启动（不含 Flower 监控，轻量级）
 docker-compose up -d
+
+# 含 Flower 监控面板
+docker-compose --profile monitoring up -d
 ```
 
 自动启动顺序：
@@ -474,7 +479,16 @@ docker-compose up -d
 2. **Redis** — 等待健康检查通过
 3. **API** — 执行数据库迁移 → 启动 FastAPI
 4. **Worker** — 等 API 健康后启动 Celery Worker
-5. **Flower** — 启动任务监控面板
+5. **Flower**（仅 `--profile monitoring`）— 启动任务监控面板
+
+> 💡 **轻量化优化**：Flower 已改为按需启动（profile），默认不消耗资源。需要监控时加 `--profile monitoring` 参数。
+
+> 💡 **本地 ML 依赖**：默认 Docker 镜像不安装 `sentence-transformers`（节省 ~800MB torch）。需要本地 Embedding 兜底 / CrossEncoder 重排序时，在 `.env` 中设置 `INSTALL_LOCAL_ML=true` 后重新构建：
+> ```bash
+> # 在 kb_qa_system/.env 或环境变量中设置
+> INSTALL_LOCAL_ML=true
+> docker-compose build --no-cache api worker
+> ```
 
 ### 7.2 手动方式启动顺序
 
@@ -610,7 +624,86 @@ ENABLE_PROMETHEUS=True
 
 ---
 
-## 10. 常见问题排查
+## 10. 性能调优
+
+### 10.1 PostgreSQL 调优
+
+本项目为 PostgreSQL 提供了调优参数配置，适配 512M 内存容器，通过 [docker-compose.yml](file:///c:/Users/DOXIA/Desktop/企业知识库问答系统/kb_qa_system/docker-compose.yml) 中 postgres 服务的 `command` 字段以 `-c` 参数逐项设置，无需手动操作。
+
+> ⚠️ **为何不挂载 postgresql.conf**：使用 `-c config_file=/custom/path` 覆盖会导致 PostgreSQL 在自定义配置文件所在目录寻找 `pg_hba.conf`（认证配置），而非默认的 PGDATA 目录，从而启动失败。`-c` 参数方式保留 Docker 入口点创建的默认配置（含 `listen_addresses='*'` 和正确的 `hba_file` 路径）。参数详解见 [postgresql.conf](file:///c:/Users/DOXIA/Desktop/企业知识库问答系统/kb_qa_system/backend/scripts/postgresql.conf)（仅作参考文档，不挂载）。
+
+**调优参数说明**：
+
+| 参数 | PG 默认值 | 调优值 | 作用 |
+|------|----------|--------|------|
+| `shared_buffers` | 128MB | 128MB | 数据缓冲池（512M 容器维持） |
+| `effective_cache_size` | 4GB | 384MB | 规划器预估可用缓存（影响索引选择） |
+| `work_mem` | 4MB | 8MB | 排序/哈希内存（提升向量检索性能） |
+| `maintenance_work_mem` | 64MB | 64MB | VACUUM/索引构建内存 |
+| `random_page_cost` | 4.0 | 1.1 | SSD 随机读代价（关键：倾向索引扫描） |
+| `effective_io_concurrency` | 1 | 200 | SSD 并发 IO |
+| `max_connections` | 100 | 50 | 连接数上限（匹配 DB_POOL_SIZE） |
+| `log_min_duration_statement` | -1 | 1000 | 记录 >1s 慢查询 |
+
+**验证配置生效**：
+
+```bash
+docker-compose exec postgres psql -U postgres -d kb_qa -c "SHOW shared_buffers; SHOW random_page_cost; SHOW work_mem;"
+# 预期输出：shared_buffers = 128MB, random_page_cost = 1.1, work_mem = 8MB
+```
+
+**调整参数**：
+
+如需修改参数（如容器内存调整后），编辑 [docker-compose.yml](file:///c:/Users/DOXIA/Desktop/企业知识库问答系统/kb_qa_system/docker-compose.yml) 中 postgres 服务的 `command` 字段对应 `-c` 参数后重启：
+
+```bash
+docker-compose up -d postgres  # 重新创建容器以应用新参数
+```
+
+> 💡 参数说明参考 [postgresql.conf](file:///c:/Users/DOXIA/Desktop/企业知识库问答系统/kb_qa_system/backend/scripts/postgresql.conf)（该文件仅作文档参考，实际生效靠 `command` 中的 `-c` 参数）。
+
+**关闭调优**（使用 PG 默认配置）：
+
+注释 `docker-compose.yml` 中 postgres 服务的 `command` 字段，然后 `docker-compose up -d postgres`。
+
+### 10.2 前端资源加载优化
+
+#### 10.2.1 API 预连接
+
+[index.html](file:///c:/Users/DOXIA/Desktop/企业知识库问答系统/kb_qa_system/frontend/index.html) 已通过 `<link rel="preconnect">` 预连接后端 API 域名，减少首屏 API 请求的 DNS + TLS 握手开销（约 100-200ms）。
+
+**配置**：Vite 构建时自动从 `.env` 读取 `VITE_API_BASE_URL` 替换 `index.html` 中的 `%VITE_API_BASE_URL%`。
+
+```bash
+# 在 frontend/.env.production 中设置生产后端域名
+VITE_API_BASE_URL=https://your-backend.up.railway.app/api/v1
+```
+
+> 💡 同源部署（`VITE_API_BASE_URL=/api/v1`）时浏览器自动跳过 preconnect，无副作用。
+
+#### 10.2.2 modulePreload 优化
+
+[vite.config.ts](file:///c:/Users/DOXIA/Desktop/企业知识库问答系统/kb_qa_system/frontend/vite.config.ts) 已配置 `modulePreload: { polyfill: false }`，移除了不必要的 polyfill（约 600 bytes），依赖浏览器原生 `modulepreload` 支持（Chrome 61+/Firefox 60+/Safari 10.1+）。
+
+### 10.3 后端冷启动优化
+
+通过 `MODEL_EAGER_HEALTH_CHECK` 环境变量控制模型健康检查的启动行为：
+
+| 值 | 行为 | 适用场景 |
+|----|------|----------|
+| `False`（默认） | 健康检查后台异步启动，应用立即就绪 | 生产环境、Railway 部署 |
+| `True` | 等待健康检查 Task 创建后再就绪 | 调试、要求首批请求前熔断器已更新 |
+
+```bash
+# 在 backend/.env 中配置
+MODEL_EAGER_HEALTH_CHECK=False  # 生产推荐
+```
+
+> 💡 即使设为 `False`，`manager` 内部 `_ensure_initialized()` 懒加载兜底仍生效，首次真实调用时按需初始化。
+
+---
+
+## 11. 常见问题排查
 
 ### Q1: pgvector 扩展缺失
 

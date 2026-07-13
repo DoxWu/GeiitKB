@@ -67,7 +67,7 @@ export function ToastContainer() {
             role={ariaRole}
             aria-live={toast.type === "error" ? "assertive" : "polite"}
             className={cn(
-              "flex items-start gap-3 rounded-lg border border-line border-l-4 bg-surface p-4 shadow-lg",
+              "flex items-start gap-3 rounded-lg border border-line border-l-4 bg-surface p-4 shadow-xl ring-1 ring-black/5 dark:ring-white/10",
               "min-w-[320px] max-w-md animate-slide-in-right",
               config.className,
             )}

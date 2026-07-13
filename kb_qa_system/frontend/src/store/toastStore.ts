@@ -13,6 +13,7 @@
 
 import { create } from "zustand";
 import type { ToastItem } from "@/types/api";
+import { formatApiError } from "@/utils/errorMessage";
 
 /** Toast Store 状态接口 */
 interface ToastState {
@@ -34,6 +35,19 @@ interface ToastState {
 
   /** 快捷方法：错误通知 */
   error: (title: string, description?: string) => void;
+
+  /**
+   * 快捷方法：API 错误通知（自动友好化）
+   *
+   * 作用：
+   *   接收任意错误对象，自动按 HTTP 状态码分类为友好的中文提示。
+   *   标题为错误分类（如 "网络连接失败"、"权限不足"），
+   *   描述为可操作的建议或具体原因。
+   *
+   * @param fallbackTitle - 兜底标题（当错误无法识别时使用，如 "删除失败"）
+   * @param err - 捕获的错误对象
+   */
+  apiError: (fallbackTitle: string, err: unknown) => void;
 
   /** 快捷方法：警告通知 */
   warning: (title: string, description?: string) => void;
@@ -86,6 +100,18 @@ export const useToastStore = create<ToastState>((set, get) => ({
       title,
       description,
       duration: 6000,
+    });
+  },
+
+  apiError: (fallbackTitle, err) => {
+    // 作用：将错误对象转换为友好的分类化中文提示
+    const { title, description } = formatApiError(err, fallbackTitle);
+    get().addToast({
+      type: "error",
+      title,
+      description,
+      // 错误通知显示时间延长至 8 秒，方便用户阅读详情
+      duration: 8000,
     });
   },
 

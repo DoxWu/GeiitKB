@@ -94,7 +94,7 @@ export interface DocumentQueryParams {
   sort_by?: SortField;
   /** 排序方向 */
   sort_order?: SortOrder;
-  /** 所属文档库分支ID */
+  /** 所属文档库分支ID（0 表示未分类/默认分支，≥1 指定分支，不传则不过滤） */
   folder_id?: number;
   /** 文档范围筛选：private 我的文档 / public 公共文档 / all 全部 */
   scope?: DocumentScope;
@@ -199,3 +199,34 @@ export interface ImportUrlParams {
   /** 可见性，默认 "private" */
   visibility?: DocumentVisibility;
 }
+
+// ============================================
+// 批量操作相关类型（多选功能）
+// ============================================
+
+/** 批量删除请求 */
+export interface BatchDeleteRequest {
+  /** 要删除的文档ID列表 */
+  document_ids: number[];
+}
+
+/** 批量移动请求 */
+export interface BatchMoveRequest {
+  /** 要移动的文档ID列表 */
+  document_ids: number[];
+  /** 目标分支ID（null 表示移出分支，归入未分类） */
+  folder_id: number | null;
+}
+
+/** 批量操作响应 */
+export interface BatchOperationResponse {
+  /** 成功操作的文档数量 */
+  success_count: number;
+  /** 失败详情列表 */
+  failed: { document_id: number; reason: string }[];
+  /** 请求操作的文档总数 */
+  total: number;
+}
+
+/** 未分类/默认分支的虚拟ID（哨兵值） */
+export const UNCLASSIFIED_FOLDER_ID = 0;

@@ -1,19 +1,12 @@
 /**
- * 移动文档到其他分支弹窗组件
+ * 批量移动文档到分支弹窗组件
  *
  * 作用：
- *   提供分支选择列表，将指定文档移动到目标分支。
+ *   提供分支选择列表，将选中的多个文档移动到目标分支。
  *   支持移动到已有分支或移出分支（归入未分类）。
  *
- * 修复 Issue 6：前端缺少移动文档到其他分支的功能
- *
  * 使用方式：
- *   <MoveToFolderModal
- *     open={open}
- *     documentId={doc.id}
- *     currentFolderId={doc.folder_id}
- *     onClose={() => setOpen(false)}
- *   />
+ *   <BatchMoveModal open={open} onClose={() => setOpen(false)} />
  */
 
 import { useState, useEffect } from "react";
@@ -23,57 +16,47 @@ import { useDocumentStore } from "@/store/documentStore";
 import { useToastStore } from "@/store/toastStore";
 import { cn } from "@/lib/utils";
 
-/** MoveToFolderModal 组件属性 */
-interface MoveToFolderModalProps {
+/** BatchMoveModal 组件属性 */
+interface BatchMoveModalProps {
   /** 是否打开 */
   open: boolean;
-  /** 文档ID */
-  documentId: number;
-  /** 当前所属分支ID（用于高亮当前分支） */
-  currentFolderId: number | null;
   /** 关闭回调 */
   onClose: () => void;
 }
 
-/** MoveToFolderModal 组件 */
-export function MoveToFolderModal({
-  open,
-  documentId,
-  currentFolderId,
-  onClose,
-}: MoveToFolderModalProps) {
-  const { folders, moveDocument } = useDocumentStore();
+/** BatchMoveModal 组件 */
+export function BatchMoveModal({ open, onClose }: BatchMoveModalProps) {
+  const { folders, selectedDocIds, batchMove } = useDocumentStore();
   const toast = useToastStore();
   const [selectedFolderId, setSelectedFolderId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // 弹窗打开时，默认选中当前分支
+  // 弹窗打开时，默认选中"未分类"
   useEffect(() => {
     if (open) {
-      setSelectedFolderId(currentFolderId);
+      setSelectedFolderId(null);
     }
-  }, [open, currentFolderId]);
+  }, [open]);
 
-  /** 提交移动 */
+  /** 提交批量移动 */
   async function handleSubmit() {
-    // 如果选中的就是当前分支，无需移动
-    if (selectedFolderId === currentFolderId) {
-      toast.info("文档已在该分支中");
-      onClose();
-      return;
-    }
-
     setLoading(true);
     try {
-      await moveDocument(documentId, selectedFolderId);
-      toast.success(
-        selectedFolderId === null
-          ? "文档已移出分支"
-          : "文档已移动到目标分支",
-      );
+      const result = await batchMove(selectedFolderId);
+      if (result.failed.length > 0) {
+        toast.warning(
+          `移动完成：成功 ${result.success_count} 个，失败 ${result.failed.length} 个`,
+        );
+      } else {
+        toast.success(
+          `已移动 ${result.success_count} 个文档到${
+            selectedFolderId === null ? "未分类" : "目标分支"
+          }`,
+        );
+      }
       onClose();
     } catch (err) {
-      toast.apiError("移动失败", err);
+      toast.apiError("批量移动失败", err);
     } finally {
       setLoading(false);
     }
@@ -85,20 +68,19 @@ export function MoveToFolderModal({
     onClose();
   }
 
+  const selectedCount = selectedDocIds.size;
+
   return (
     <Modal
       open={open}
       onClose={handleClose}
-      title="移动文档到分支"
+      title={`批量移动 ${selectedCount} 个文档到分支`}
       footer={
         <>
           <Button variant="ghost" onClick={handleClose}>
             取消
           </Button>
-          <Button
-            onClick={handleSubmit}
-            loading={loading}
-          >
+          <Button onClick={handleSubmit} loading={loading}>
             移动
           </Button>
         </>
@@ -106,7 +88,7 @@ export function MoveToFolderModal({
     >
       <div className="space-y-1">
         <p className="mb-3 text-xs text-ink-tertiary">
-          选择目标分支，将文档移动到该分支。选择"未分类"可将文档移出所有分支。
+          选择目标分支，将选中的 {selectedCount} 个文档移动到该分支。选择"未分类"可将文档移出所有分支。
         </p>
 
         {/* 未分类选项 */}
@@ -122,9 +104,6 @@ export function MoveToFolderModal({
         >
           <FileText className="h-4 w-4" />
           <span>未分类</span>
-          {currentFolderId === null && (
-            <span className="ml-auto text-xs text-ink-tertiary">当前</span>
-          )}
         </button>
 
         {/* 分支列表 */}
@@ -150,9 +129,6 @@ export function MoveToFolderModal({
               <span className="ml-auto text-xs text-ink-tertiary">
                 {folder.document_count} 篇
               </span>
-              {currentFolderId === folder.id && (
-                <span className="ml-2 text-xs text-brand">当前</span>
-              )}
             </button>
           ))
         )}

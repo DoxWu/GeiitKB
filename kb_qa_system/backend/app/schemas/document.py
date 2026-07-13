@@ -219,3 +219,68 @@ class DocumentRenameRequest(BaseModel):
         max_length=200,
         description="新文档标题（1-200 字符，经安全校验）",
     )
+
+
+# ============================================
+# 批量操作请求 Schema - 多选功能
+# ============================================
+
+class BatchDeleteRequest(BaseModel):
+    """
+    批量删除文档请求 Schema
+
+    作用：
+        定义 POST /documents/batch-delete 接口的请求体。
+        支持一次性软删除多个文档，减少前端逐个调用的网络开销。
+
+    示例请求：
+        {"document_ids": [1, 2, 3]}
+    """
+    document_ids: List[int] = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="要删除的文档ID列表（1-100 个）",
+    )
+
+
+class BatchMoveRequest(BaseModel):
+    """
+    批量移动文档到分支请求 Schema
+
+    作用：
+        定义 POST /documents/batch-move 接口的请求体。
+        支持一次性将多个文档移动到目标分支或移出分支（归入未分类）。
+
+    示例请求：
+        {"document_ids": [1, 2, 3], "folder_id": 5}
+        {"document_ids": [1, 2, 3], "folder_id": null}
+    """
+    document_ids: List[int] = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="要移动的文档ID列表（1-100 个）",
+    )
+    folder_id: Optional[int] = Field(
+        None,
+        description="目标分支ID（null 表示移出分支，归入未分类）",
+    )
+
+
+class BatchOperationResponse(BaseModel):
+    """
+    批量操作响应 Schema
+
+    作用：
+        返回批量操作的结果，包含成功数和失败详情。
+
+    示例响应：
+        {"success_count": 3, "failed": [], "total": 3}
+    """
+    success_count: int = Field(0, description="成功操作的文档数量")
+    failed: List[dict] = Field(
+        default_factory=list,
+        description="失败详情列表 [{document_id, reason}]",
+    )
+    total: int = Field(0, description="请求操作的文档总数")

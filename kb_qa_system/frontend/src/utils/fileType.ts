@@ -42,6 +42,8 @@ export const TEXT_PREVIEWABLE_TYPES = [
   ".csv",
   ".html",
   ".htm",
+  ".json",
+  ".docx", // 后端用 python-docx 提取段落文本，返回 text/plain
 ];
 
 /** 可通过 iframe 嵌入预览的文件类型 */

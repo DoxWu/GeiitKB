@@ -142,7 +142,7 @@ export function UploadZone({ folderId, compact = false }: UploadZoneProps) {
             f.name === file.name ? { ...f, status: "error", error: errorMsg } : f,
           ),
         );
-        toast.error("上传失败", errorMsg);
+        toast.apiError("上传失败", err);
       } finally {
         // 清理 AbortController 引用
         abortControllersRef.current.delete(file.name);

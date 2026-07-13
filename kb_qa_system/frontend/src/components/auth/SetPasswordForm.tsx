@@ -70,7 +70,7 @@ export function SetPasswordForm({ token, onSuccess }: SetPasswordFormProps) {
       toast.success("密码设置成功", "您现在可以使用邮箱登录了");
       onSuccess?.();
     } catch (err) {
-      toast.error("设置失败", err instanceof Error ? err.message : "请重试");
+      toast.apiError("设置失败", err);
     } finally {
       setLoading(false);
     }

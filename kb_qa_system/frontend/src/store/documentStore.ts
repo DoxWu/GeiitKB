@@ -25,6 +25,7 @@ import type {
   SortField,
   SortOrder,
   UploadDocumentParams,
+  BatchOperationResponse,
 } from "@/types/document";
 import { POLL_INTERVAL, MAX_POLL_COUNT } from "@/utils/constants";
 
@@ -75,6 +76,12 @@ interface DocumentState {
   /** 预览面板是否打开 */
   previewOpen: boolean;
 
+  // ===== 多选状态 =====
+  /** 已选中的文档ID集合 */
+  selectedDocIds: Set<number>;
+  /** 是否处于多选模式 */
+  selectionMode: boolean;
+
   // ===== 分支操作 =====
   /** 加载分支列表 */
   loadFolders: () => Promise<void>;
@@ -122,6 +129,22 @@ interface DocumentState {
   openPreview: (doc: DocumentResponse) => void;
   /** 关闭预览 */
   closePreview: () => void;
+
+  // ===== 多选操作 =====
+  /** 进入多选模式 */
+  enterSelectionMode: () => void;
+  /** 退出多选模式（并清空选择） */
+  exitSelectionMode: () => void;
+  /** 切换单个文档的选中状态 */
+  toggleSelect: (docId: number) => void;
+  /** 全选当前页文档 */
+  selectAll: () => void;
+  /** 清空选择 */
+  clearSelection: () => void;
+  /** 批量删除选中的文档 */
+  batchDelete: () => Promise<BatchOperationResponse>;
+  /** 批量移动选中的文档到目标分支 */
+  batchMove: (folderId: number | null) => Promise<BatchOperationResponse>;
 
   // ===== 轮询管理 =====
   /** 检查并启动处理中文档的状态轮询 */
@@ -273,6 +296,10 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
   previewDocument: null,
   previewOpen: false,
+
+  // 多选状态初始值
+  selectedDocIds: new Set<number>(),
+  selectionMode: false,
 
   // ===== 分支操作 =====
   loadFolders: async () => {
@@ -462,6 +489,64 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
   closePreview: () => {
     set({ previewOpen: false, previewDocument: null });
+  },
+
+  // ===== 多选操作 =====
+  enterSelectionMode: () => {
+    set({ selectionMode: true });
+  },
+
+  exitSelectionMode: () => {
+    set({ selectionMode: false, selectedDocIds: new Set<number>() });
+  },
+
+  toggleSelect: (docId: number) => {
+    set((state) => {
+      const newSet = new Set(state.selectedDocIds);
+      if (newSet.has(docId)) {
+        newSet.delete(docId);
+      } else {
+        newSet.add(docId);
+      }
+      // 自动进入多选模式（首次选中时）
+      return { selectedDocIds: newSet, selectionMode: true };
+    });
+  },
+
+  selectAll: () => {
+    const { documents } = get();
+    const newSet = new Set<number>(documents.map((d) => d.id));
+    set({ selectedDocIds: newSet, selectionMode: true });
+  },
+
+  clearSelection: () => {
+    set({ selectedDocIds: new Set<number>() });
+  },
+
+  batchDelete: async () => {
+    const { selectedDocIds } = get();
+    const ids = Array.from(selectedDocIds);
+    if (ids.length === 0) {
+      throw new Error("未选中任何文档");
+    }
+    const result = await documentApi.batchDeleteDocuments(ids);
+    // 清空选择并重新加载列表
+    set({ selectedDocIds: new Set<number>(), selectionMode: false });
+    await get().loadDocuments();
+    return result;
+  },
+
+  batchMove: async (folderId: number | null) => {
+    const { selectedDocIds } = get();
+    const ids = Array.from(selectedDocIds);
+    if (ids.length === 0) {
+      throw new Error("未选中任何文档");
+    }
+    const result = await documentApi.batchMoveDocuments(ids, folderId);
+    // 清空选择并重新加载列表
+    set({ selectedDocIds: new Set<number>(), selectionMode: false });
+    await get().loadDocuments();
+    return result;
   },
 
   // ===== 轮询管理 =====

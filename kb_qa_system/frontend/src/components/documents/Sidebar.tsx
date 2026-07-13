@@ -26,6 +26,7 @@ import {
   Globe,
   User as UserIcon,
   Layers,
+  Inbox,
 } from "lucide-react";
 import { Button, ThemeToggle } from "@/components/common";
 import { FolderItem } from "./FolderItem";
@@ -198,6 +199,21 @@ export function Sidebar({ onCollapse }: SidebarProps) {
               <Plus className="h-3.5 w-3.5" />
             </button>
           </div>
+
+          {/* 未分类（默认分支）：显示 folder_id 为 NULL 的文档 */}
+          {/* 作用：未指定分支的文档归入此虚拟分支，方便用户分类管理 */}
+          <button
+            onClick={() => selectFolder(0)}
+            className={cn(
+              "mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+              currentFolderId === 0
+                ? "bg-brand-light text-brand"
+                : "text-ink-secondary hover:bg-muted hover:text-ink",
+            )}
+          >
+            <Inbox className="h-3.5 w-3.5" />
+            <span>未分类</span>
+          </button>
 
           {/* 分支列表 */}
           {foldersLoading ? (

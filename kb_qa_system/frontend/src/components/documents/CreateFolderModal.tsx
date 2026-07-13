@@ -49,7 +49,7 @@ export function CreateFolderModal({ open, onClose }: CreateFolderModalProps) {
       setError("");
       onClose();
     } catch (err) {
-      toast.error("创建失败", err instanceof Error ? err.message : undefined);
+      toast.apiError("创建失败", err);
     } finally {
       setLoading(false);
     }

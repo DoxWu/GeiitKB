@@ -22,6 +22,7 @@ import type {
   FolderListResponse,
   DocumentStats,
   ImportUrlParams,
+  BatchOperationResponse,
 } from "@/types/document";
 
 /**
@@ -44,7 +45,8 @@ export async function getDocuments(
   if (params.sort_by) query.set("sort_by", params.sort_by);
   if (params.sort_order) query.set("sort_order", params.sort_order);
   // [Bug-1 修复] 补充 folder_id 参数传递，确保按分支过滤文档
-  if (params.folder_id) query.set("folder_id", String(params.folder_id));
+  // 注意：folder_id=0 表示"未分类"，必须用 !== undefined 判断（0 是 falsy）
+  if (params.folder_id !== undefined) query.set("folder_id", String(params.folder_id));
   // 补充 scope 参数传递，支持"我的/公共/全部"文档范围切换
   if (params.scope) query.set("scope", params.scope);
 
@@ -110,6 +112,43 @@ export async function moveDocument(
   const query = folderId !== null ? `?folder_id=${folderId}` : "";
   return apiClient.patch<DocumentResponse>(
     `${API_PATHS.DOCUMENT_MOVE(id)}${query}`,
+  );
+}
+
+/**
+ * 批量删除文档（多选功能）
+ *
+ * 调用 POST /documents/batch-delete，一次性软删除多个文档。
+ * 逐个校验权限，无权操作的文档记入 failed 列表。
+ *
+ * @param documentIds - 要删除的文档ID列表（1-100 个）
+ * @returns 批量操作结果（成功数 + 失败详情）
+ */
+export async function batchDeleteDocuments(
+  documentIds: number[],
+): Promise<BatchOperationResponse> {
+  return apiClient.post<BatchOperationResponse>(
+    API_PATHS.DOCUMENT_BATCH_DELETE,
+    { document_ids: documentIds },
+  );
+}
+
+/**
+ * 批量移动文档到分支（多选功能）
+ *
+ * 调用 POST /documents/batch-move，一次性将多个文档移动到目标分支或移出分支。
+ *
+ * @param documentIds - 要移动的文档ID列表（1-100 个）
+ * @param folderId - 目标分支ID（null 表示移出分支，归入未分类）
+ * @returns 批量操作结果（成功数 + 失败详情）
+ */
+export async function batchMoveDocuments(
+  documentIds: number[],
+  folderId: number | null,
+): Promise<BatchOperationResponse> {
+  return apiClient.post<BatchOperationResponse>(
+    API_PATHS.DOCUMENT_BATCH_MOVE,
+    { document_ids: documentIds, folder_id: folderId },
   );
 }
 

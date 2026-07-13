@@ -83,8 +83,8 @@ export function ChatSidebar({ onCollapse }: ChatSidebarProps) {
       if (id === currentConversationId) {
         navigate("/chat");
       }
-    } catch {
-      toast.error("删除失败");
+    } catch (err) {
+      toast.apiError("删除失败", err);
     }
     setConfirmDeleteId(null);
   }
