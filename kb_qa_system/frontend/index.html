@@ -9,6 +9,13 @@
     <meta name="theme-color" content="#D97757" >
     <meta name="description" content="GeiIt企业知识库 - 企业知识库智能问答系统" >
     <title>GeiIt企业知识库</title>
+    <!-- 优化2：API 预连接（减少首屏 API 请求 DNS + TLS 握手开销 ~100-200ms）
+         Vite 构建时从 .env 读取 VITE_API_BASE_URL 替换 %VITE_API_BASE_URL%
+         开发环境指向 localhost，生产环境指向 Railway 后端域名
+         preconnect 同时含 dns-prefetch 语义，单独 dns-prefetch 作为不支持 preconnect 的浏览器回退
+         同源部署（VITE_API_BASE_URL=/api/v1）时浏览器自动跳过，无副作用 -->
+    <link rel="dns-prefetch" href="%VITE_API_BASE_URL%" >
+    <link rel="preconnect" href="%VITE_API_BASE_URL%" crossorigin >
     <script type="module">
       if (import.meta.hot?.on) {
         import.meta.hot.on('vite:error', (error) => {

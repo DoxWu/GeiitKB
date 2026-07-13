@@ -7,6 +7,12 @@ import { visualizer } from "rollup-plugin-visualizer";
 export default defineConfig({
   build: {
     sourcemap: 'hidden',
+    // 优化2：显式配置 modulePreload
+    // 作用：入口 chunk 的依赖 chunk 会通过 <link rel="modulepreload"> 预加载
+    // polyfill: false → 不注入 modulepreload polyfill（~600 bytes）
+    //   理由：目标浏览器（Chrome 61+/Firefox 60+/Safari 10.1+）原生支持 modulepreload，
+    //         polyfill 仅为兼容已废弃的旧 Edge，本项目浏览器范围不需要
+    modulePreload: { polyfill: false },
     // 资源文件名哈希（长期缓存策略）
     rollupOptions: {
       output: {
@@ -20,8 +26,12 @@ export default defineConfig({
         manualChunks: {
           // React 核心（react、react-dom、react-router）
           'react-vendor': ['react', 'react-dom', 'react-router-dom'],
-          // 状态管理与工具库
-          'utils-vendor': ['zustand', 'lucide-react'],
+          // 状态管理
+          'utils-vendor': ['zustand'],
+          // 图标库（独立拆分，避免混入业务 chunk）
+          'icons-vendor': ['lucide-react'],
+          // Markdown 渲染（独立拆分，体积约 1MB，避免影响首屏加载）
+          'markdown-vendor': ['react-markdown', 'remark-gfm', 'rehype-highlight', 'highlight.js'],
         },
       },
     },

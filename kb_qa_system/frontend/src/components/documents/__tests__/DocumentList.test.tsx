@@ -31,6 +31,11 @@ vi.mock("@/store/documentStore", () => ({
   useDocumentStore: () => mockDocStore,
 }));
 
+// mock MoveToFolderModal 以避免其从 store 读取 folders（DocumentList 通过 DocumentItem 间接渲染此组件）
+vi.mock("../MoveToFolderModal", () => ({
+  MoveToFolderModal: () => null,
+}));
+
 import { DocumentList } from "../DocumentList";
 import type { DocumentResponse } from "@/types/document";
 
@@ -44,6 +49,7 @@ function createMockDoc(overrides: Partial<DocumentResponse> = {}): DocumentRespo
     file_size: 1024,
     status: "completed",
     visibility: "private",
+    folder_id: null,
     processing_step: null,
     processing_progress: 100,
     quality_score: 85,

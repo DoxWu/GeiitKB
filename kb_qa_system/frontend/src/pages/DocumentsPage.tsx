@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Menu, Globe } from "lucide-react";
+import { Menu, Globe, Lock } from "lucide-react";
 import { Sidebar } from "@/components/documents/Sidebar";
 import { DocumentList } from "@/components/documents/DocumentList";
 import { DocumentPreview } from "@/components/documents/DocumentPreview";
@@ -25,6 +25,7 @@ import { StatsPanel } from "@/components/documents/StatsPanel";
 import { UrlImportModal } from "@/components/documents/UrlImportModal";
 import { Button } from "@/components/common/Button";
 import { useDocumentStore } from "@/store/documentStore";
+import { useAuthStore } from "@/store/authStore";
 import { cn } from "@/lib/utils";
 
 /** DocumentsPage 组件 */
@@ -32,6 +33,7 @@ export default function DocumentsPage() {
   const {
     folders,
     currentFolderId,
+    currentScope,
     documents,
     total,
     page,
@@ -39,9 +41,15 @@ export default function DocumentsPage() {
     loadFolders,
     loadDocuments,
     selectFolder,
+    selectScope,
     setPage,
     stopAllPolling,
   } = useDocumentStore();
+
+  // 获取当前登录用户（用于判断游客身份）
+  // 作用：guest 用户无权上传/导入文档，需隐藏上传入口并提示
+  const { user } = useAuthStore();
+  const isGuest = user?.user_type === "guest";
 
   // 从 URL 读取 folderId 参数（支持 /documents/:folderId 路由）
   const { folderId } = useParams<{ folderId: string }>();
@@ -90,11 +98,16 @@ export default function DocumentsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** 当前分支名称 */
+  /** 当前分支名称（修复 Issue 8：根据范围显示不同标题） */
+  const scopeLabels: Record<string, string> = {
+    accessible: "全部文档",
+    mine: "个人文档库",
+    public: "公共文档库",
+  };
   const currentFolderName =
-    currentFolderId === null
-      ? "全部文档"
-      : folders.find((f) => f.id === currentFolderId)?.name || "文档库";
+    currentFolderId !== null
+      ? folders.find((f) => f.id === currentFolderId)?.name || "文档库"
+      : scopeLabels[currentScope] || "全部文档";
 
   /** 是否为空列表（显示完整上传区） */
   const showFullUploadZone = documents.length === 0 && total === 0;
@@ -157,18 +170,30 @@ export default function DocumentsPage() {
             {/* 排序 */}
             <SortDropdown />
 
-            {/* 上传按钮 */}
-            <UploadZone folderId={currentFolderId} compact />
+            {/* 上传按钮 / 游客无权提交提示 */}
+            {isGuest ? (
+              <span
+                className="flex items-center gap-1.5 rounded-md bg-muted px-3 py-1.5 text-xs text-ink-secondary"
+                title="游客账号无权上传文档，请注册账号后使用"
+              >
+                <Lock className="h-3.5 w-3.5" />
+                游客无权提交
+              </span>
+            ) : (
+              <UploadZone folderId={currentFolderId} compact />
+            )}
 
-            {/* URL 导入按钮 */}
-            <Button
-              variant="secondary"
-              size="sm"
-              icon={<Globe className="h-4 w-4" />}
-              onClick={() => setUrlImportOpen(true)}
-            >
-              URL 导入
-            </Button>
+            {/* URL 导入按钮（游客隐藏） */}
+            {!isGuest && (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<Globe className="h-4 w-4" />}
+                onClick={() => setUrlImportOpen(true)}
+              >
+                URL 导入
+              </Button>
+            )}
           </div>
 
           {/* 移动端搜索框 */}
@@ -179,11 +204,29 @@ export default function DocumentsPage() {
 
         {/* 文档列表区 */}
         <div className="flex-1 overflow-y-auto p-4 lg:p-6">
-          {/* 空列表时显示完整上传区 */}
+          {/* 空列表时显示完整上传区 / 游客无权提交提示 */}
           {showFullUploadZone ? (
-            <div className="mx-auto max-w-2xl">
-              <UploadZone folderId={currentFolderId} />
-            </div>
+            isGuest ? (
+              <div className="mx-auto max-w-2xl">
+                <div className="flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-line bg-surface py-12 text-center">
+                  <Lock className="h-10 w-10 text-ink-tertiary" />
+                  <div>
+                    <p className="text-sm font-medium text-ink">
+                      游客账号无权提交文档
+                    </p>
+                    <p className="mt-1 text-xs text-ink-tertiary">
+                      游客为只读账号，仅可浏览公共文档库并提问（限 20 次）。
+                      <br />
+                      如需上传文档，请注册正式账号后登录。
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="mx-auto max-w-2xl">
+                <UploadZone folderId={currentFolderId} />
+              </div>
+            )
           ) : (
             <div className="mx-auto max-w-4xl space-y-4">
               {/* 文档统计面板 */}

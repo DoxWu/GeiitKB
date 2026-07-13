@@ -30,9 +30,27 @@ describe("SourceCard 组件", () => {
     expect(screen.getByText("Python 入门指南")).toBeInTheDocument();
   });
 
-  it("显示相关度分数百分比", () => {
+  it("显示相关度分数百分比和置信度标签", () => {
+    // score=0.85 >= 0.7 → 高置信 · 85%
     render(<SourceCard source={createSource({ score: 0.85 })} />);
-    expect(screen.getByText("85%")).toBeInTheDocument();
+    expect(screen.getByText(/高置信 · 85%/)).toBeInTheDocument();
+  });
+
+  it("高置信度分数（>=0.7）显示绿色高置信标签", () => {
+    render(<SourceCard source={createSource({ score: 0.92 })} />);
+    expect(screen.getByText(/高置信 · 92%/)).toBeInTheDocument();
+  });
+
+  it("较高置信度分数（0.5-0.7）显示品牌色较高标签", () => {
+    // 60% 落在 0.525-0.7 区间，后端判定 high，前端标记"较高"
+    render(<SourceCard source={createSource({ score: 0.6 })} />);
+    expect(screen.getByText(/较高 · 60%/)).toBeInTheDocument();
+  });
+
+  it("参考级分数（<0.5）显示黄色参考标签", () => {
+    // 0.4 在 0.35-0.525 区间，后端标记 low，前端标记"参考"
+    render(<SourceCard source={createSource({ score: 0.4 })} />);
+    expect(screen.getByText(/参考 · 40%/)).toBeInTheDocument();
   });
 
   it("短内容直接显示，无展开按钮", () => {

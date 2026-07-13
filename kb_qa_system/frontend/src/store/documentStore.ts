@@ -21,6 +21,7 @@ import type {
   DocumentResponse,
   DocumentFolder,
   DocumentQueryParams,
+  DocumentScope,
   SortField,
   SortOrder,
   UploadDocumentParams,
@@ -36,6 +37,13 @@ interface DocumentState {
   currentFolderId: number | null;
   /** 分支加载中 */
   foldersLoading: boolean;
+  /**
+   * 当前文档范围（修复 Issue 8：区分公用/个人文档库）
+   * - accessible: 我可访问的（自己的+公共库，默认）
+   * - mine: 仅个人文档库
+   * - public: 仅公共文档库
+   */
+  currentScope: DocumentScope;
 
   // ===== 文档列表状态 =====
   /** 文档列表 */
@@ -78,6 +86,8 @@ interface DocumentState {
   deleteFolder: (id: number) => Promise<void>;
   /** 选择分支 */
   selectFolder: (id: number | null) => void;
+  /** 选择文档范围（修复 Issue 8：公用/个人文档库切换） */
+  selectScope: (scope: DocumentScope) => void;
 
   // ===== 文档操作 =====
   /** 加载文档列表 */
@@ -92,6 +102,8 @@ interface DocumentState {
   removeDocument: (id: number) => Promise<void>;
   /** 重新处理文档 */
   reprocessDocument: (id: number) => Promise<void>;
+  /** 移动文档到其他分支（修复 Issue 6） */
+  moveDocument: (id: number, folderId: number | null) => Promise<void>;
 
   // ===== 搜索与排序 =====
   /** 设置搜索关键词（不立即加载，由组件防抖触发） */
@@ -245,6 +257,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   folders: [],
   currentFolderId: null,
   foldersLoading: false,
+  currentScope: "accessible",
 
   documents: [],
   total: 0,
@@ -312,7 +325,14 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   },
 
   selectFolder: (id: number | null) => {
-    set({ currentFolderId: id, page: 1 });
+    // 修复 Issue 8：选择分支时重置范围为 accessible，避免与 scope 冲突
+    set({ currentFolderId: id, currentScope: "accessible", page: 1 });
+    get().loadDocuments();
+  },
+
+  selectScope: (scope: DocumentScope) => {
+    // 修复 Issue 8：切换文档范围时清除分支选择，避免冲突
+    set({ currentScope: scope, currentFolderId: null, page: 1 });
     get().loadDocuments();
   },
 
@@ -328,6 +348,8 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
         sort_by: state.sortBy,
         sort_order: state.sortOrder,
         folder_id: state.currentFolderId ?? undefined,
+        // 修复 Issue 8：传递 scope 参数，实现公用/个人文档库切换
+        scope: state.currentScope,
       };
       const response = await documentApi.getDocuments(params);
       set({
@@ -387,6 +409,17 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       await get().loadDocuments();
     } catch (err) {
       set({ error: err instanceof Error ? err.message : "重新处理失败" });
+      throw err;
+    }
+  },
+
+  moveDocument: async (id: number, folderId: number | null) => {
+    try {
+      await documentApi.moveDocument(id, folderId);
+      // 移动后重新加载文档列表，反映新的分支归属
+      await get().loadDocuments();
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : "移动文档失败" });
       throw err;
     }
   },
@@ -461,8 +494,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
                     ...d,
                     status: docStatus,
                     processing_progress: progress,
-                    processing_step:
-                      status === "STARTED" ? "处理中" : d.processing_step,
+                    // 修复 Issue 5：不再把 processing_step 覆盖为"处理中"，
+                    // 保留后端返回的具体步骤（parsing/cleaning/chunking 等）
+                    processing_step: d.processing_step,
                   }
                 : d,
             ),

@@ -38,6 +38,8 @@ interface AuthState {
 
   /** 登录 */
   login: (data: LoginRequest) => Promise<void>;
+  /** 游客登录（临时账号，权限受限） */
+  guestLogin: () => Promise<void>;
   /** 登出 */
   logout: () => Promise<void>;
   /** 删除账号（GDPR/PIPL 合规） */
@@ -100,6 +102,36 @@ export const useAuthStore = create<AuthState>((set) => ({
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "登录失败，请重试";
+      set({ loading: false, error: message });
+      throw err;
+    }
+  },
+
+  guestLogin: async () => {
+    set({ loading: true, error: null });
+    try {
+      const tokenResponse = await authApi.guestLogin();
+
+      // 持久化到 localStorage（与 login 一致）
+      localStorage.setItem(
+        TOKEN_STORAGE_KEY,
+        JSON.stringify(tokenResponse),
+      );
+      localStorage.setItem(
+        USER_STORAGE_KEY,
+        JSON.stringify(tokenResponse.user),
+      );
+
+      set({
+        user: tokenResponse.user,
+        tokens: tokenResponse,
+        isAuthenticated: true,
+        loading: false,
+        error: null,
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "游客登录失败，请重试";
       set({ loading: false, error: message });
       throw err;
     }

@@ -15,10 +15,14 @@
   },
   "dependencies": {
     "clsx": "^2.1.1",
+    "highlight.js": "^11.11.1",
     "lucide-react": "^0.511.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-markdown": "^9.1.0",
     "react-router-dom": "^7.3.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.0.2",
     "zustand": "^5.0.3"
   },
@@ -54,5 +58,8 @@
     "vite": "^6.3.5",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^4.1.10"
+  },
+  "allowScripts": {
+    "esbuild": true
   }
 }

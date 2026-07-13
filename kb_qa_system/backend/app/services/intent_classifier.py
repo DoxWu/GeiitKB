@@ -78,6 +78,30 @@ class IntentType(str, Enum):
     META = "meta"
 
 
+class QuerySubType(str, Enum):
+    """
+    查询子类型（用于动态混合检索权重）
+
+    作用：
+        在 kb_query 意图下进一步细分问题特征，
+        用于动态调整向量检索与关键词检索的权重比例。
+        复用 intent_classifier 模块，避免新增独立组件（方案 B）。
+
+    值：
+        EXACT_MATCH: 精确匹配型（含代码标识符、错误码、专有名词、引号引用）
+            示例："asyncio.gather 怎么用"、"错误码 E404"、"什么是 RAG"
+            权重策略：提高关键词权重（0.6），精确命中比语义匹配更重要
+        SEMANTIC: 语义型（"如何/为什么/区别/原理"等开放性问题）
+            示例："如何实现异步编程"、"为什么需要向量检索"
+            权重策略：提高向量权重（关键词权重降至 0.2），语义相似度更重要
+        HYBRID: 混合型（默认，兼顾语义和关键词）
+            权重策略：保持默认权重（0.3），与原 KEYWORD_SEARCH_WEIGHT 一致
+    """
+    EXACT_MATCH = "exact_match"
+    SEMANTIC = "semantic"
+    HYBRID = "hybrid"
+
+
 # ============================================
 # 意图分类结果数据类
 # ============================================
@@ -155,18 +179,18 @@ class IntentClassifier:
 
     # 追问关键词（需要结合上下文继续，不需要新检索）
     # 作用：匹配延续性指令、追问细节、展开补充等
+    # 注意：仅保留完整的追问短语，移除"为什么""这个""那个""详细""具体"等
+    #       宽泛词——它们在正常知识库查询中频繁出现，会导致误判为追问而跳过检索
     _FOLLOWUP_KEYWORDS = {
         # 延续
         "继续", "接着说", "然后呢", "还有呢", "接下来", "往下说",
-        # 详细化
-        "详细", "展开", "深入", "进一步", "具体", "举个例子", "举例",
-        "说清楚", "再解释", "详细说说", "详细讲讲",
-        # 指代上文
-        "刚才", "上面", "前面", "你说的", "你提到的", "那个",
+        # 详细化（完整短语，非单字）
+        "举个例子", "举例说明", "说清楚", "再解释", "详细说说", "详细讲讲",
+        "展开说说", "展开讲讲", "深入说说", "进一步说明",
+        # 指代上文（完整短语）
+        "刚才说的", "上面提到的", "前面说的", "你说的那个", "你提到的那个",
         "第1点", "第2点", "第3点", "第一点", "第二点", "第三点",
-        "这个", "另一个",
-        # 追问原因
-        "为什么", "怎么会", "凭什么", "原因是什么",
+        "另一个",
     }
 
     # 元问题关键词（关于系统本身，不需要检索）
@@ -189,11 +213,18 @@ class IntentClassifier:
     ]
 
     # 追问关键词正则
+    # 注意：所有正则加 ^ 锚定句首，避免"这个""详细"等词在正常查询中被误匹配
+    #   原实现用 search() 部分匹配，"这个系统怎么用"会命中"这个"→误判为追问→跳过检索
+    #   修复后用 ^ 锚定句首，只有追问词出现在句首才匹配
     _FOLLOWUP_PATTERNS = [
-        re.compile(r'(继续|接着|然后呢|还有呢|接下来|往下)'),
-        re.compile(r'(详细|展开|深入|进一步|具体|举例)'),
-        re.compile(r'(刚才|上面|前面|你说的|你提到的|那个|这个)'),
-        re.compile(r'第[一二三四五六七八九十\d]+点'),
+        # 延续性指令（通常出现在句首）
+        re.compile(r'^(继续|接着说?|然后呢|还有呢|接下来|往下说?)'),
+        # 详细化指令（完整短语，避免"详细设计"被误匹配）
+        re.compile(r'^(详细说说|详细讲讲|展开说说|展开讲讲|深入说说|进一步说明|举个例子|举例说明)'),
+        # 指代上文（移除"这个""那个"——过于宽泛，正常查询常含）
+        re.compile(r'^(刚才说的|上面提到的|前面说的|你说的那个|你提到的那个)'),
+        # 指代第N点
+        re.compile(r'^第[一二三四五六七八九十\d]+点'),
     ]
 
     # 元问题正则
@@ -202,6 +233,34 @@ class IntentClassifier:
         re.compile(r'你(能|会)(做什么|什么)', re.IGNORECASE),
         re.compile(r'(怎么|如何)(使用|用)', re.IGNORECASE),
         re.compile(r'(有什么|你的)(功能|能力)', re.IGNORECASE),
+    ]
+
+    # 精确匹配型查询正则（任务2：用于动态权重——提高关键词权重）
+    # 作用：识别含代码标识符、错误码、引号引用、版本号等需要精确匹配的问题
+    # 匹配场景：
+    #   1. 代码标识符：函数名/类名/方法名（含点号或下划线，如 asyncio.gather、requests.get）
+    #   2. 错误码/状态码：E404、HTTP 500、errno 13
+    #   3. 引号引用：含 "..." 或 '...' 的精确引用
+    #   4. 版本号：Python 3.10、v2.0
+    #   5. 下划线标识符：user_id、document_processor
+    _EXACT_MATCH_PATTERNS = [
+        re.compile(r'\b\w+\.\w+'),              # 函数调用/属性访问：asyncio.gather
+        re.compile(r'\b[A-Z]+\d+\b'),           # 错误码：E404、HTTP500
+        re.compile(r'[\'"].+?[\'"]'),           # 引号引用
+        re.compile(r'\b[vV]?\d+\.\d+\b'),       # 版本号：3.10、v2.0
+        re.compile(r'\b\w+_\w+\b'),             # 下划线标识符：user_id
+    ]
+
+    # 语义型查询正则（任务2：用于动态权重——提高向量权重）
+    # 作用：识别"如何/为什么/区别/原理"等开放性语义问题
+    # 这类问题关键词匹配意义不大，向量语义相似度更能找到相关文档
+    _SEMANTIC_PATTERNS = [
+        re.compile(r'(如何|怎么|怎样|怎样做|怎么做)'),
+        re.compile(r'(为什么|为何|何故)'),
+        re.compile(r'(区别|差异|不同|对比|比较)'),
+        re.compile(r'(原理|机制|流程|步骤|过程)'),
+        re.compile(r'(最佳实践|建议|推荐|方案)'),
+        re.compile(r'(how\s+to|why|what\s+is|difference|principle)', re.IGNORECASE),
     ]
 
     # LLM 分类 Prompt
@@ -368,8 +427,21 @@ class IntentClassifier:
         # 作用：追问词 + 有历史 → followup；追问词 + 无历史 → chitchat
         has_history = bool(conversation_history and len(conversation_history) > 0)
 
+        # 查询长度保护：长查询（>8字符）即使以追问词开头也按 kb_query 处理
+        # 作用：避免"继续优化这个模块的性能"（11字符）以"继续"开头被误判为追问
+        #   纯追问指令通常 ≤6 字符（"继续"、"详细说说"、"举个例子"），
+        #   超过 8 字符往往包含具体主题，应触发检索
+        #   阈值 8 平衡："详细说说这个架构"(8字)走追问，"详细说说系统架构设计"(10字)走检索
+        query_len = len(query)
+
         for pattern in self._FOLLOWUP_PATTERNS:
             if pattern.search(query):
+                # 长查询保护：>8 字符走 KB_QUERY，触发检索
+                if query_len > 8:
+                    logger.debug(
+                        f"查询含追问词但长度>{8}，按 kb_query 处理: {query[:50]}"
+                    )
+                    break  # 跳出追问检测，继续走后续规则（最终走 KB_QUERY）
                 if has_history:
                     return IntentClassification(
                         intent=IntentType.FOLLOWUP,
@@ -388,7 +460,12 @@ class IntentClassifier:
                     )
 
         if normalized in self._FOLLOWUP_KEYWORDS:
-            if has_history:
+            # 同样的长度保护应用于关键词匹配
+            if query_len > 8:
+                logger.debug(
+                    f"查询含追问关键词但长度>{8}，按 kb_query 处理: {query[:50]}"
+                )
+            elif has_history:
                 return IntentClassification(
                     intent=IntentType.FOLLOWUP,
                     confidence=0.9,
@@ -565,6 +642,54 @@ class IntentClassifier:
                 pass
 
         return None
+
+    # ============================================
+    # 查询子类型检测（任务2：动态混合检索权重）
+    # ============================================
+
+    def _detect_query_sub_type(self, query: str) -> "QuerySubType":
+        """
+        检测查询子类型（用于动态混合检索权重）
+
+        作用：
+            在 kb_query 意图下，进一步识别问题特征，
+            返回 QuerySubType 用于动态调整向量/关键词检索权重。
+            复用 intent_classifier 模块（方案 B），避免新增独立组件。
+
+        实现方式：
+            纯正则匹配（零 LLM 调用，零延迟）：
+            1. 优先检测精确匹配型（代码标识符/错误码/引号/版本号/下划线标识符）
+               —— 含代码标识符的问题即使有"如何"也偏向精确匹配
+            2. 其次检测语义型（如何/为什么/区别/原理/最佳实践）
+            3. 都不匹配返回 HYBRID（默认，使用默认权重）
+
+        参数：
+            query: str - 用户问题
+
+        返回:
+            QuerySubType - 查询子类型（EXACT_MATCH/SEMANTIC/HYBRID）
+
+        使用方式：
+            sub_type = intent_classifier._detect_query_sub_type(query)
+            weight = settings.QUERY_SUBTYPE_WEIGHTS.get(sub_type.value, 0.3)
+        """
+        if not query:
+            return QuerySubType.HYBRID
+
+        # 1. 检测精确匹配型（优先级最高）
+        # 作用：含代码标识符的问题，关键词精确命中比语义匹配更重要
+        for pattern in self._EXACT_MATCH_PATTERNS:
+            if pattern.search(query):
+                return QuerySubType.EXACT_MATCH
+
+        # 2. 检测语义型
+        # 作用：开放性问题，向量语义相似度更能找到相关文档
+        for pattern in self._SEMANTIC_PATTERNS:
+            if pattern.search(query):
+                return QuerySubType.SEMANTIC
+
+        # 3. 默认混合型
+        return QuerySubType.HYBRID
 
 
 # ============================================

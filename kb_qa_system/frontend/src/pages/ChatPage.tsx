@@ -17,7 +17,7 @@
  *   <ChatPage />  // 由路由 /chat 和 /chat/:conversationId 渲染
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Menu, MessageSquare } from "lucide-react";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
@@ -57,6 +57,22 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
+  // 用户是否在滚动容器底部附近
+  // 作用：智能滚动策略——仅在用户已在底部时自动跟随滚动，
+  //       用户向上浏览历史内容时不强制拉回底部
+  const [isAtBottom, setIsAtBottom] = useState(true);
+
+  // 滚动事件处理：判断用户是否在底部
+  // 作用：监听滚动容器的 scroll 事件，根据滚动位置更新 isAtBottom
+  //       阈值 120px：允许小幅偏差，避免因亚像素精度导致误判
+  const handleScroll = useCallback(() => {
+    if (!messagesContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } =
+      messagesContainerRef.current;
+    const distanceToBottom = scrollHeight - scrollTop - clientHeight;
+    setIsAtBottom(distanceToBottom < 120);
+  }, []);
+
   // 页面加载时获取对话列表
   // E3-03: 仅在挂载时执行一次。loadConversations 来自 zustand store，
   // 引用稳定但 lint 无法识别；若加入依赖会导致重复请求。
@@ -84,12 +100,20 @@ export default function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
-  // 自动滚动到底部（消息或流式内容变化时）
+  // 切换对话时强制滚动到底部
+  // 作用：加载新对话的消息后，应显示最新消息而非保持旧滚动位置
   useEffect(() => {
-    if (messagesEndRef.current) {
+    setIsAtBottom(true);
+  }, [conversationId]);
+
+  // 自动滚动到底部（仅在用户已在底部时跟随）
+  // 作用：流式输出和消息更新时，如果用户在底部则自动滚动跟随；
+  //       用户向上浏览历史内容时不强制拉回，保障浏览体验
+  useEffect(() => {
+    if (isAtBottom && messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages, streamingContent, streaming]);
+  }, [messages, streamingContent, streaming, isAtBottom]);
 
   // 错误自动清除
   useEffect(() => {
@@ -121,6 +145,9 @@ export default function ChatPage() {
 
   /** 处理发送消息 */
   function handleSend(message: string) {
+    // 用户发送新消息时强制滚动到底部
+    // 作用：确保用户能看到自己发送的消息和后续的 AI 回复
+    setIsAtBottom(true);
     sendMessage(message);
   }
 
@@ -142,7 +169,6 @@ export default function ChatPage() {
         )}
         <div className="relative h-full">
           <ChatSidebar
-            collapsed={!sidebarOpen}
             onCollapse={() => setSidebarOpen(false)}
           />
         </div>
@@ -171,7 +197,7 @@ export default function ChatPage() {
 
         {/* 错误提示条 */}
         {error && (
-          <div className="border-b border-danger/30 bg-red-50 px-4 py-2 text-sm text-danger">
+          <div className="border-b border-danger/30 bg-danger/10 px-4 py-2 text-sm text-danger dark:bg-danger/20">
             {error}
           </div>
         )}
@@ -179,6 +205,7 @@ export default function ChatPage() {
         {/* 消息列表区 */}
         <div
           ref={messagesContainerRef}
+          onScroll={handleScroll}
           className="flex-1 overflow-y-auto px-4 py-6"
         >
           {loadingMessages ? (

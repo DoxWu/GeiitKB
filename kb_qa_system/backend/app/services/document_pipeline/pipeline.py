@@ -25,7 +25,7 @@ import os
 import logging
 import hashlib
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from app.services.document_pipeline.context import PipelineContext
 from app.services.document_pipeline.cleaner import TextCleaner
@@ -67,14 +67,17 @@ class DocumentPipeline:
 
     # 流水线步骤进度表
     # 作用：每个步骤完成后对应的进度百分比
+    # 修复 Issue 5：调整进度分布，预留 embedding 阶段进度（95→90），
+    #   向量化阶段（document_tasks.py 中）占 90→100，避免提前显示 100%
     _STEP_PROGRESS = {
-        "parsing": 20,
-        "layout_analysis": 30,
-        "cleaning": 40,
-        "table_extraction": 60,
-        "ocr": 75,
-        "chunking": 85,
-        "quality_scoring": 95,
+        "parsing": 15,
+        "layout_analysis": 25,
+        "cleaning": 35,
+        "table_extraction": 50,
+        "ocr": 65,
+        "chunking": 75,
+        "quality_scoring": 85,
+        "embedding": 95,  # 向量化阶段（在 document_tasks.py 中设置）
         "completed": 100,
     }
 
@@ -110,6 +113,7 @@ class DocumentPipeline:
         file_name: str,
         document_id: Optional[int] = None,
         document_title: str = "",
+        progress_callback: Optional[Callable[[str, int], None]] = None,
     ) -> PipelineContext:
         """
         执行完整文档处理流水线
@@ -132,6 +136,8 @@ class DocumentPipeline:
             file_name: str - 文件名
             document_id: Optional[int] - 文档ID
             document_title: str - 文档标题
+            progress_callback: Optional[Callable[[str, int], None]] - 进度回调
+                修复 Issue 5：每步开始/进度更新时调用，供调用方实时写入数据库
 
         返回:
             PipelineContext - 包含完整处理结果（chunks、quality_score 等）
@@ -151,6 +157,7 @@ class DocumentPipeline:
             file_name=file_name,
             document_id=document_id,
             document_title=document_title,
+            progress_callback=progress_callback,
         )
 
         pipeline_start = datetime.now()
@@ -326,6 +333,8 @@ class DocumentPipeline:
         """
         # TextCleaner 内部会调用 ctx.start_step / finish_step
         self.cleaner.clean(ctx)
+        # 修复 Issue 5：步骤完成后更新进度，供前端进度条增量展示
+        ctx.set_progress(self._STEP_PROGRESS["cleaning"])
 
     # ============================================
     # 步骤4：表格提取
@@ -343,6 +352,8 @@ class DocumentPipeline:
         """
         # TableExtractor 内部会调用 ctx.start_step / finish_step
         self.table_extractor.extract(ctx)
+        # 修复 Issue 5：步骤完成后更新进度
+        ctx.set_progress(self._STEP_PROGRESS["table_extraction"])
 
     # ============================================
     # 步骤5：图片处理
@@ -360,6 +371,8 @@ class DocumentPipeline:
         """
         # ImageProcessor 内部会调用 ctx.start_step / finish_step
         self.image_processor.extract(ctx)
+        # 修复 Issue 5：步骤完成后更新进度
+        ctx.set_progress(self._STEP_PROGRESS["ocr"])
 
     # ============================================
     # 步骤6：分块
@@ -385,6 +398,9 @@ class DocumentPipeline:
                 chunk.metadata["document_id"] = ctx.document_id
                 chunk.metadata["document_title"] = ctx.document_title
 
+        # 修复 Issue 5：步骤完成后更新进度
+        ctx.set_progress(self._STEP_PROGRESS["chunking"])
+
     # ============================================
     # 步骤7：质量评分
     # ============================================
@@ -401,6 +417,8 @@ class DocumentPipeline:
         """
         # QualityScorer 内部会调用 ctx.start_step / finish_step
         self.quality_scorer.score(ctx)
+        # 修复 Issue 5：步骤完成后更新进度
+        ctx.set_progress(self._STEP_PROGRESS["quality_scoring"])
 
     # ============================================
     # 工具方法：文件哈希

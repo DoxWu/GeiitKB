@@ -12,7 +12,7 @@
  */
 
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import {
   BookOpen,
   Plus,
@@ -23,6 +23,9 @@ import {
   Settings,
   ChevronLeft,
   HelpCircle,
+  Globe,
+  User as UserIcon,
+  Layers,
 } from "lucide-react";
 import { Button, ThemeToggle } from "@/components/common";
 import { FolderItem } from "./FolderItem";
@@ -34,16 +37,17 @@ import { cn } from "@/lib/utils";
 
 /** Sidebar 组件属性 */
 interface SidebarProps {
-  /** 移动端折叠状态 */
+  /** 移动端折叠状态（已废弃：可见性由父容器 hidden/block 控制，保留兼容父组件传参） */
   collapsed?: boolean;
-  /** 折叠回调（移动端） */
+  /** 折叠回调（移动端关闭抽屉） */
   onCollapse?: () => void;
 }
 
 /** Sidebar 组件 */
-export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
+export function Sidebar({ onCollapse }: SidebarProps) {
   const navigate = useNavigate();
-  const { folders, currentFolderId, selectFolder, foldersLoading } =
+  const location = useLocation();
+  const { folders, currentFolderId, currentScope, selectFolder, selectScope, foldersLoading } =
     useDocumentStore();
   const { user, logout } = useAuthStore();
   const toast = useToastStore();
@@ -59,9 +63,11 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
     <>
       <aside
         className={cn(
-          "flex h-full w-60 flex-col border-r border-line bg-surface",
-          "transition-transform duration-200",
-          collapsed && "w-0 -translate-x-full overflow-hidden",
+          // 固定 w-60 宽度，始终非透明（bg-surface 为纯白/纯灰，不使用透明度）
+          // 可见性由父容器 DocumentsPage 的 hidden/block 控制，此处不再用 collapsed 操纵宽度
+          // （此前 collapsed={!sidebarOpen} 在桌面端恒为 true，导致 w-0 侧边栏在正常缩放下不可见，
+          //   仅在 300% 缩放触发移动端布局后才可见）
+          "flex h-full w-60 flex-shrink-0 flex-col border-r border-line bg-surface shadow-xl",
         )}
       >
         {/* 顶部品牌区 */}
@@ -83,46 +89,106 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
           )}
         </div>
 
-        {/* 导航链接 */}
-        <div className="flex gap-1 border-b border-line px-3 py-2">
+        {/* 导航链接 - 垂直布局，显眼入口 */}
+        {/* 作用：提供知识库、问答对话、帮助中心三个主要入口，
+             使用垂直全宽按钮，活跃态高亮，非活跃态清晰可见 */}
+        <nav className="space-y-1 border-b border-line px-2 py-2">
           <button
+            onClick={() => navigate("/documents")}
             className={cn(
-              "flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium",
-              "bg-brand-light text-brand",
+              "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              location.pathname.startsWith("/documents")
+                ? "bg-brand-light text-brand"
+                : "text-ink-secondary hover:bg-muted hover:text-ink",
             )}
           >
-            <Files className="h-3.5 w-3.5" />
+            <Files className="h-4 w-4" />
             知识库
           </button>
           <button
             onClick={() => navigate("/chat")}
             className={cn(
-              "flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium",
-              "text-ink-secondary transition-colors hover:bg-muted hover:text-ink",
+              "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              location.pathname.startsWith("/chat")
+                ? "bg-brand-light text-brand"
+                : "text-ink-secondary hover:bg-muted hover:text-ink",
             )}
           >
-            <MessageSquare className="h-3.5 w-3.5" />
-            问答
+            <MessageSquare className="h-4 w-4" />
+            问答对话
           </button>
           {/* D10-02 帮助文档链接 */}
           <button
             onClick={() => navigate("/help")}
             className={cn(
-              "flex items-center justify-center rounded-md px-2 py-1.5 text-xs font-medium",
-              "text-ink-secondary transition-colors hover:bg-muted hover:text-ink",
+              "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              location.pathname === "/help"
+                ? "bg-brand-light text-brand"
+                : "text-ink-secondary hover:bg-muted hover:text-ink",
             )}
-            aria-label="帮助"
+            aria-label="帮助中心"
             title="帮助中心"
           >
-            <HelpCircle className="h-3.5 w-3.5" />
+            <HelpCircle className="h-4 w-4" />
+            帮助中心
           </button>
-        </div>
+        </nav>
 
         {/* 分支列表区 */}
         <div className="flex-1 overflow-y-auto px-2 py-3">
+          {/* 修复 Issue 8：文档库范围切换 - 公用/个人/全部 */}
+          <div className="mb-3">
+            <span className="mb-1 block px-2 text-xs font-medium text-ink-secondary">
+              文档库范围
+            </span>
+            {/* 全部文档（accessible：自己的+公共库） */}
+            <button
+              onClick={() => selectScope("accessible")}
+              className={cn(
+                "mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                currentScope === "accessible" && currentFolderId === null
+                  ? "bg-brand-light text-brand"
+                  : "text-ink-secondary hover:bg-muted hover:text-ink",
+              )}
+            >
+              <Layers className="h-3.5 w-3.5" />
+              <span>全部文档</span>
+            </button>
+            {/* 公共文档库（public）- 蓝色标识 */}
+            <button
+              onClick={() => selectScope("public")}
+              className={cn(
+                "mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                currentScope === "public"
+                  ? "bg-blue-50 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400"
+                  : "text-ink-secondary hover:bg-muted hover:text-ink",
+              )}
+            >
+              <Globe className="h-3.5 w-3.5" />
+              <span>公共文档库</span>
+            </button>
+            {/* 个人文档库（mine）- 品牌色标识 */}
+            <button
+              onClick={() => selectScope("mine")}
+              className={cn(
+                "mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                currentScope === "mine"
+                  ? "bg-brand-light text-brand"
+                  : "text-ink-secondary hover:bg-muted hover:text-ink",
+              )}
+            >
+              <UserIcon className="h-3.5 w-3.5" />
+              <span>个人文档库</span>
+            </button>
+          </div>
+
+          {/* 分隔线 */}
+          <div className="mb-2 border-t border-line" />
+
+          {/* 个人分支列表 */}
           <div className="mb-2 flex items-center justify-between px-2">
             <span className="text-xs font-medium text-ink-secondary">
-              文档库
+              我的分支
             </span>
             <button
               onClick={() => setShowCreateModal(true)}
@@ -132,20 +198,6 @@ export function Sidebar({ collapsed, onCollapse }: SidebarProps) {
               <Plus className="h-3.5 w-3.5" />
             </button>
           </div>
-
-          {/* 全部文档 */}
-          <button
-            onClick={() => selectFolder(null)}
-            className={cn(
-              "mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
-              currentFolderId === null
-                ? "bg-brand-light text-brand"
-                : "text-ink-secondary hover:bg-muted hover:text-ink",
-            )}
-          >
-            <Files className="h-3.5 w-3.5" />
-            <span>全部文档</span>
-          </button>
 
           {/* 分支列表 */}
           {foldersLoading ? (

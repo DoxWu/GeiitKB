@@ -22,6 +22,7 @@ RAG 检索链路模块
 
 import logging
 import re
+import threading
 from typing import List, Dict, Any, Optional, AsyncGenerator
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -124,6 +125,7 @@ class RAGChainService:
         top_k: Optional[int] = None,
         user_id: Optional[int] = None,
         document_ids: Optional[List[int]] = None,
+        user_type: str = "regular",
     ) -> List[Dict[str, Any]]:
         """
         检索相关文档片段（权限隔离版）
@@ -136,6 +138,7 @@ class RAGChainService:
             - user_id 不为空时，自动计算可访问文档 ID（自己的 + 公共库）
             - document_ids 显式指定时，取与可访问范围的交集（防止越权）
             - 无 user_id 时一律返回空列表（M-3 修复：不再信任裸 document_ids）
+            - guest 用户（任务5）仅可访问公共库，不可访问任何私人文档
 
         实现方式：
             1. 若提供 user_id，通过权限服务获取可访问文档 ID 列表
@@ -149,6 +152,7 @@ class RAGChainService:
             top_k: Optional[int] - 返回的文档数量
             user_id: Optional[int] - 当前用户 ID（来自 JWT，用于计算检索范围）
             document_ids: Optional[List[int]] - 显式限定的文档 ID（与可访问范围取交集）
+            user_type: str - 用户类型（regular/guest，任务5），guest 仅检索公共库
 
         返回：
             List[Dict[str, Any]] - 检索结果
@@ -165,7 +169,7 @@ class RAGChainService:
         try:
             # 计算检索范围（权限隔离）
             # 作用：确保只检索用户有权访问的文档，防止越权
-            accessible_ids = self._compute_search_scope(user_id, document_ids)
+            accessible_ids = self._compute_search_scope(user_id, document_ids, user_type)
             if accessible_ids is not None and len(accessible_ids) == 0:
                 # 无可访问文档，直接返回空（不调用向量库）
                 logger.info(f"用户 {user_id} 无可访问文档，检索返回空")
@@ -189,10 +193,25 @@ class RAGChainService:
             retrieval_start = _time.time()
 
             vector_store = get_vector_store()
+
+            # 任务2：动态混合检索权重
+            # 作用：复用 intent_classifier 检测查询子类型，动态调整关键词检索权重
+            # 实现方式：纯正则匹配（零延迟），从 settings.QUERY_SUBTYPE_WEIGHTS 映射权重
+            # 子类型：exact_match(0.6) / semantic(0.2) / hybrid(0.3)
+            from app.services.intent_classifier import intent_classifier, QuerySubType
+            query_sub_type = intent_classifier._detect_query_sub_type(query)
+            dynamic_keyword_weight = settings.QUERY_SUBTYPE_WEIGHTS.get(
+                query_sub_type.value, settings.KEYWORD_SEARCH_WEIGHT
+            )
+            logger.debug(
+                f"查询子类型: {query_sub_type.value}，关键词权重: {dynamic_keyword_weight}"
+            )
+
             results = vector_store.search(
                 query,
                 top_k=search_k,
                 document_ids=accessible_ids,
+                keyword_weight=dynamic_keyword_weight,
             )
 
             retrieval_ms = int((_time.time() - retrieval_start) * 1000)
@@ -224,6 +243,7 @@ class RAGChainService:
         self,
         user_id: Optional[int],
         document_ids: Optional[List[int]],
+        user_type: str = "regular",
     ) -> Optional[List[int]]:
         """
         计算检索范围（最小权限原则）
@@ -238,10 +258,12 @@ class RAGChainService:
                 存在越权风险——调用方可传入任意 document_ids 检索他人文档。
                 修复后强制要求 user_id，无 user_id 一律拒绝。）
             4. 都未提供：返回空列表拒绝检索
+            5. guest 用户（任务5）：仅可访问公共库，permission 服务内部过滤
 
         参数：
             user_id: Optional[int] - 用户 ID（必须提供，否则拒绝检索）
             document_ids: Optional[List[int]] - 显式限定的文档 ID（与可访问范围取交集）
+            user_type: str - 用户类型（regular/guest，任务5），透传至 permission 服务
 
         返回:
             Optional[List[int]] - 最终检索范围
@@ -269,7 +291,9 @@ class RAGChainService:
         #   优化路径（未来）：可为 ask/ask_stream 增加可选 db 参数，由调用方注入请求级 session
         db = SessionLocal()
         try:
-            accessible = permission_service.get_accessible_document_ids(db, user_id)
+            accessible = permission_service.get_accessible_document_ids(
+                db, user_id, user_type=user_type
+            )
 
             # 同时有 document_ids：取交集（最小权限）
             if document_ids is not None:
@@ -844,6 +868,35 @@ class RAGChainService:
         return "\n\n".join(context_parts)
 
     # ============================================
+    # 构建无引用降级上下文 - 任务2
+    # ============================================
+
+    def _build_no_citation_context(self, question: str) -> str:
+        """
+        构建无引用降级模式的上下文（任务2）
+
+        作用：
+            当检索结果为空或质量不足时，构建特殊上下文提示，
+            告知 LLM 当前没有知识库引用，让其基于自身通用知识回答，
+            并在回答中声明答案来源（避免用户误以为是知识库内容）。
+
+        实现方式：
+            返回固定提示文本 + 用户原始问题，替代正常检索上下文填入 prompt。
+
+        参数：
+            question: str - 用户原始问题
+
+        返回：
+            str - 降级提示上下文（替代正常检索上下文填入 prompt）
+        """
+        return (
+            "【系统提示】当前未从知识库中检索到与用户问题相关的文档引用。"
+            "请基于你的通用知识回答用户问题，并在回答开头明确说明"
+            "「以下内容基于模型通用知识，未引用知识库文档」。\n\n"
+            f"用户问题：{question}"
+        )
+
+    # ============================================
     # 构建对话历史
     # ============================================
 
@@ -1121,6 +1174,7 @@ class RAGChainService:
         document_ids: Optional[List[int]] = None,
         summary: Optional[str] = None,
         intent_switched: bool = False,
+        user_type: str = "regular",
     ) -> Dict[str, Any]:
         """
         问答（非流式）
@@ -1218,6 +1272,7 @@ class RAGChainService:
             top_k=top_k,
             user_id=user_id,
             document_ids=document_ids,
+            user_type=user_type,
         )
         retrieval_time_ms = int((_time.time() - retrieval_start) * 1000)
 
@@ -1233,30 +1288,24 @@ class RAGChainService:
         #   - 分数接近阈值 → 标记低置信度，生成但附加提示
         #   - 正常 → 继续生成
         validation = self._validate_before_generation(question, search_results)
+        no_citation_mode = False
         if not validation.should_generate:
-            # 检索质量不足，直接返回兜底回答
-            # 作用：避免基于低质量检索结果生成幻觉回答，节省 LLM 调用
-            logger.info(f"预生成校验拦截，原因：{validation.reason}")
+            # 任务2 降级策略优化：检索质量不足时，仍将问题提交给 LLM
+            # 作用：原实现直接返回兜底文案，用户得不到实际回答；
+            #       改为用"无上下文"提示调用 LLM，让其基于通用知识回答，
+            #       并在回答前拼接降级提示，明确告知用户答案未基于知识库。
+            logger.info(f"预生成校验拦截，降级为无引用模式调用 LLM，原因：{validation.reason}")
             # Prometheus 指标：记录校验拦截和降级
-            # 作用：监控检索质量不足的频率，判断知识库覆盖率
             from app.core.prometheus_metrics import record_validation_skip, record_degradation
             record_validation_skip()
-            record_degradation("skipped")
-            return {
-                "answer": validation.fallback_answer,
-                "sources": [],
-                "question": question,
-                "degraded": False,
-                "degrade_reason": None,
-                "metrics": self._build_metrics(
-                    search_results, retrieval_time_ms, {}, "skipped"
-                ),
-                "conflict": None,
-            }
-
-        # 2. 构建上下文文本（含矛盾标记）
-        # 作用：冲突片段会被添加 ⚠️ 标记，让 LLM 注意差异
-        context = self._build_context(search_results, conflict_result=conflict_result)
+            record_degradation("no_citation")
+            no_citation_mode = True
+            # 构建无引用上下文，继续走 LLM 调用流程（不 return）
+            context = self._build_no_citation_context(question)
+        else:
+            # 正常路径：构建含检索结果的上下文（含矛盾标记）
+            # 作用：冲突片段会被添加 ⚠️ 标记，让 LLM 注意差异
+            context = self._build_context(search_results, conflict_result=conflict_result)
 
         # 3. 构建对话历史（含历史摘要注入 + 意图切换提示 + 矛盾提示）
         # 作用：
@@ -1286,6 +1335,15 @@ class RAGChainService:
             answer = llm_service.invoke(messages)
             # 读取 LLM 指标（invoke 内部已重置并填充 last_metrics）
             llm_metrics = llm_service.last_metrics
+            # 任务2：无引用模式下，LLM 成功后拼接降级提示并标记降级
+            # 作用：明确告知用户本次回答未基于知识库引用，来自模型通用知识
+            if no_citation_mode:
+                degrade_notice = (
+                    "⚠️ 未在知识库中检索到相关引用，以下回答来自模型通用知识，仅供参考。\n\n"
+                )
+                answer = degrade_notice + answer
+                degraded = True
+                degrade_reason = "no_citation"
         except Exception as e:
             # LLM 完全不可用（熔断打开或主备模型均失败）→ 走兜底回复
             # 作用：保证用户始终能收到响应，而不是 500 错误
@@ -1457,6 +1515,7 @@ class RAGChainService:
         document_ids: Optional[List[int]] = None,
         summary: Optional[str] = None,
         intent_switched: bool = False,
+        user_type: str = "regular",
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         问答（流式输出）
@@ -1547,6 +1606,7 @@ class RAGChainService:
             top_k=top_k,
             user_id=user_id,
             document_ids=document_ids,
+            user_type=user_type,
         )
         retrieval_time_ms = int((_time.time() - retrieval_start) * 1000)
 
@@ -1564,49 +1624,50 @@ class RAGChainService:
         validation = self._validate_before_generation(question, search_results)
         conflict_info = self._format_conflict_info(conflict_result)
 
+        no_citation_mode = False
+        # 引用来源容器（no_citation_mode 时保持空列表，供后续引用校验使用）
+        sources = []
         if not validation.should_generate:
-            # 检索质量不足，直接 yield 兜底回答（跳过 LLM 调用）
-            # 作用：避免基于低质量检索结果生成幻觉回答，节省 LLM 调用成本
-            logger.info(f"流式预生成校验拦截，原因：{validation.reason}")
+            # 任务2 流式降级策略优化：检索质量不足时，仍流式调用 LLM
+            # 作用：原实现直接 yield 兜底文案 + return，用户得不到实际回答；
+            #       改为用"无上下文"提示流式调用 LLM，先发送降级提示 chunk，
+            #       再流式输出 LLM 回答，让用户得到实际内容。
+            logger.info(f"流式预生成校验拦截，降级为无引用模式调用 LLM，原因：{validation.reason}")
             # Prometheus 指标：记录校验拦截和降级
             from app.core.prometheus_metrics import record_validation_skip, record_degradation
             record_validation_skip()
-            record_degradation("skipped")
+            record_degradation("no_citation")
+            no_citation_mode = True
+            # 构建无引用上下文
+            context = self._build_no_citation_context(question)
+            # 发送空引用来源（前端显示"无引用"）
             yield {"type": "sources", "content": []}
-            yield {
-                "type": "done",
-                "content": validation.fallback_answer,
-                "degraded": False,
-                "degrade_reason": None,
-                "metrics": self._build_metrics(
-                    search_results, retrieval_time_ms, {}, "skipped"
-                ),
-            }
-            return
+            # 不再 return，继续走流式 LLM 调用
+        else:
+            # 正常路径：构建并发送引用来源 + 构建含检索结果的上下文
+            for result in search_results:
+                sources.append({
+                    "document_id": result["metadata"].get("document_id"),
+                    "title": result["metadata"].get("document_title", "未知"),
+                    "content": result["content"][:200] + "..." if len(result["content"]) > 200 else result["content"],
+                    "score": result.get("score", 0),
+                })
 
-        # 2. 发送引用来源（先发送，让前端立即显示）
-        sources = []
-        for result in search_results:
-            sources.append({
-                "document_id": result["metadata"].get("document_id"),
-                "title": result["metadata"].get("document_title", "未知"),
-                "content": result["content"][:200] + "..." if len(result["content"]) > 200 else result["content"],
-                "score": result.get("score", 0),
-            })
+            # yield 引用来源（含矛盾检测信息，供前端展示警告）
+            # 作用：如果有矛盾，前端可以在引用来源区域展示冲突警告
+            sources_event = {"type": "sources", "content": sources}
+            if conflict_info:
+                sources_event["conflict"] = conflict_info
+            yield sources_event
 
-        # yield 引用来源（含矛盾检测信息，供前端展示警告）
-        # 作用：如果有矛盾，前端可以在引用来源区域展示冲突警告
-        sources_event = {"type": "sources", "content": sources}
-        if conflict_info:
-            sources_event["conflict"] = conflict_info
-        yield sources_event
+            # 构建含检索结果的上下文（含矛盾标记）
+            context = self._build_context(search_results, conflict_result=conflict_result)
 
-        # 3. 构建上下文和历史（含历史摘要注入 + 意图切换提示 + 矛盾提示）
+        # 3. 构建历史（含历史摘要注入 + 意图切换提示 + 矛盾提示）
         # 作用：
         #   - summary 作为 SystemMessage 放在 history 头部，提供长期上下文
         #   - intent_switched=True 时，额外注入 SystemMessage 提示 LLM 用户已切换话题
         #   - 有矛盾时，额外注入矛盾提示让 LLM 指出差异而非随意选择
-        context = self._build_context(search_results, conflict_result=conflict_result)
         history = self._build_history(
             conversation_history or [],
             summary=summary,
@@ -1617,6 +1678,14 @@ class RAGChainService:
         # 4. 构建 LLM 消息
         # 注意：这里用原始 question（不是改写后的 search_query），保持用户原意
         messages = self._build_messages(question, context, history)
+
+        # 任务2：无引用模式下，先 yield 降级提示 chunk（在 LLM 流式输出前）
+        # 作用：让用户立即看到降级提示，随后接收 LLM 基于通用知识的回答
+        if no_citation_mode:
+            yield {
+                "type": "chunk",
+                "content": "⚠️ 未在知识库中检索到相关引用，以下回答来自模型通用知识，仅供参考。\n\n",
+            }
 
         # 5. 流式调用 LLM（带重试+熔断+首字超时+降级）
         # 作用：通过 LLMResilienceService 流式调用，容错在服务层处理
@@ -1667,6 +1736,18 @@ class RAGChainService:
                 fallback = "\n\n" + fallback
             full_answer += fallback
             yield {"type": "chunk", "content": fallback}
+
+        # 任务2：无引用模式下，LLM 流式成功后标记降级并将降级提示拼接到最终回答（用于持久化）
+        # 作用：done 事件的 content 用于持久化存储，需包含降级提示以保持与非流式一致
+        # 条件：no_citation_mode 且 LLM 未失败（degraded=False 表示走 try 成功路径）
+        #       LLM 失败时 degraded 已由 except 分支设置为 circuit_open 等，不覆盖
+        if no_citation_mode and not degraded:
+            degrade_notice = (
+                "⚠️ 未在知识库中检索到相关引用，以下回答来自模型通用知识，仅供参考。\n\n"
+            )
+            full_answer = degrade_notice + full_answer
+            degraded = True
+            degrade_reason = "no_citation"
 
         # 6. 引用格式校验（非降级场景才校验）
         # 作用：移除 LLM 生成的不合法引用标注

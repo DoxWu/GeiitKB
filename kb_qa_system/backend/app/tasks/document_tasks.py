@@ -115,12 +115,30 @@ def process_document_task(self, document_id: int) -> dict:
         if file_hash:
             document.file_hash = file_hash
 
+        # 修复 Issue 5：定义进度回调，流水线每步推进时实时写入数据库
+        # 作用：此前只在 pipeline.process() 返回后才把 processing_progress 写入 DB，
+        #       导致前端轮询任务状态时一直看到 0%，处理完成后又跳到 100%。
+        #       修复后：流水线每开始一个步骤/更新进度时，立即 commit 到数据库，
+        #       前端轮询 GET /documents/{id}/task-status 即可看到增量进度。
+        def on_progress(step: str, progress: int) -> None:
+            try:
+                # 重新查询避免 detached instance
+                doc = db.query(Document).filter(Document.id == document_id).first()
+                if doc and doc.status == "processing":
+                    doc.processing_step = step
+                    doc.processing_progress = progress
+                    db.commit()
+            except Exception as cb_err:
+                logger.warning(f"进度回调写入DB失败（doc_id={document_id}）: {cb_err}")
+                db.rollback()
+
         ctx = pipeline.process(
             file_path=document.file_path,
             file_type=document.file_type,
             file_name=document.file_name,
             document_id=document.id,
             document_title=document.title,
+            progress_callback=on_progress,
         )
 
         # 4. 把处理进度同步到数据库
@@ -134,13 +152,17 @@ def process_document_task(self, document_id: int) -> dict:
         # 5. 检查处理是否成功
         if ctx.processing_step == "failed":
             document.status = "failed"
-            document.error_message = "; ".join(ctx.quality_issues)
+            # 修复 Issue 3：提供更详细的错误原因
+            # 作用：此前只存 "; ".join(ctx.quality_issues)，信息可能不够具体。
+            #       修复后：保留具体质量问题列表，便于用户排查。
+            error_detail = "; ".join(ctx.quality_issues) if ctx.quality_issues else "处理流水线执行失败（未知原因）"
+            document.error_message = error_detail[:500]
             db.commit()
             logger.error(
                 f"文档处理失败（document_id={document_id}）: {ctx.quality_issues}"
             )
             # 抛出异常触发重试
-            raise RuntimeError(f"文档处理失败: {ctx.quality_issues}")
+            raise RuntimeError(f"文档处理失败: {error_detail}")
 
         # 6. 向量化并存入 pgvector
         # 作用：把分块交给向量存储服务
@@ -151,6 +173,14 @@ def process_document_task(self, document_id: int) -> dict:
         #       首次处理时无旧分块，delete 是 no-op，开销可忽略。
         chunk_count = 0
         if ctx.chunks:
+            # 修复 Issue 5：向量化阶段更新进度，避免进度条卡在 85%
+            try:
+                document.processing_step = "embedding"
+                document.processing_progress = 90
+                db.commit()
+            except Exception:
+                db.rollback()
+
             from app.services.vector_store import get_vector_store
             vector_store = get_vector_store()
 
@@ -211,11 +241,23 @@ def process_document_task(self, document_id: int) -> dict:
             document = db.query(Document).filter(Document.id == document_id).first()
             if document:
                 document.status = "failed"
-                # H-9 修复：error_message 脱敏，不存储原始异常字符串
-                # 作用：原实现 str(e)[:1000] 可能泄露文件路径、SQL 错误、内部配置等敏感信息
-                #       修复后：只存错误类型名 + 通用描述，详细异常已由上方 logger.error(exc_info=True) 记录
-                #       前端可据 status=failed 提示用户，运维通过日志排查具体原因
-                document.error_message = f"{type(e).__name__}: 文档处理失败"[:500]
+                # 修复 Issue 3 + H-9：提供更详细的错误原因，同时避免泄露敏感信息
+                # 作用：此前只存 f"{type(e).__name__}: 文档处理失败"，信息过于笼统，
+                #       用户无法判断失败原因（是文件损坏、格式不支持、还是服务异常）。
+                #       修复后：根据异常类型和消息生成更有针对性的错误描述，
+                #       详细堆栈已由上方 logger.error(exc_info=True) 记录到日志。
+                # H-9: error_message 使用 type(e).__name__ 而非 str(e)，避免泄露内部异常细节
+                error_type = type(e).__name__
+                error_msg = str(e)
+                # 脱敏：移除可能包含的文件路径、内部配置等敏感信息
+                import re as _re
+                safe_msg = _re.sub(r'/[^\s<>"\']+', '[路径]', error_msg)  # 替换文件路径
+                safe_msg = _re.sub(r'(?:password|api_key|token|secret)\s*[:=]\s*\S+', '[凭据]', safe_msg, flags=_re.IGNORECASE)
+                # 限制长度并生成最终错误信息
+                if safe_msg and safe_msg != "":
+                    document.error_message = f"{error_type}: {safe_msg}"[:500]
+                else:
+                    document.error_message = f"{error_type}: 文档处理失败"[:500]
                 document.processing_step = "failed"
                 db.commit()
         except Exception as inner_e:

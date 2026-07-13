@@ -191,6 +191,8 @@ class UserResponse(BaseModel):
     email: str
     is_active: bool
     is_superuser: bool = False
+    # 任务5：用户类型（regular 正式用户 / guest 临时用户）
+    user_type: str = "regular"
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

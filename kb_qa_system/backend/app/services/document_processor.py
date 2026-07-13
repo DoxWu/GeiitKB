@@ -214,18 +214,32 @@ class DocumentProcessor:
 
     def extract_from_url(self, url: str) -> str:
         """
-        从网页 URL 提取文本内容（兼容接口）
+        从网页 URL 提取文本内容（含图片文本，任务3增强）
 
         作用：
-            下载网页并提取正文内容（去除 HTML 标签、脚本等）。
+            下载网页，提取正文文本，并提取图片 OCR/描述文本，
+            拼接为完整内容返回。
+            含 Content-Type 检测：非 HTML 资源抛出 ValueError("URL_NOT_HTML:...")。
+
+        实现方式：
+            调用 UrlParser.parse_with_images 一次下载同时提取文本和图片：
+            1. 下载网页 HTML（含 SSRF 防护）
+            2. 检测 Content-Type，非 HTML 抛出明确异常
+            3. 提取正文文本
+            4. 提取图片文本（OCR + 多模态描述，过滤小图片）
+            5. 拼接正文 + 图片文本返回
 
         参数：
-            url: str - 网页 URL
+            url: str - 网页 URL（已经过 SSRF 校验）
 
         返回:
-            str - 提取的纯文本内容
+            str - 提取的文本内容（正文 + 图片文本）
+
+        异常:
+            ValueError - 非 HTML 资源时抛出（消息含 "URL_NOT_HTML" 标识）
+            requests.RequestException - 下载失败
         """
-        return self.url_parser.parse(url)
+        return self.url_parser.parse_with_images(url)
 
     # ============================================
     # 兼容接口：分块

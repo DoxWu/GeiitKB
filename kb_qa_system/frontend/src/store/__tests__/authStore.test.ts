@@ -57,6 +57,7 @@ function createMockToken(): TokenResponse {
       is_active: true,
       is_superuser: false,
       created_at: "2026-01-01T00:00:00Z",
+      user_type: "regular",
     },
   };
 }

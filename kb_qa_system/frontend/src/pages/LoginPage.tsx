@@ -6,8 +6,9 @@
  *   已登录用户自动重定向至文档管理页。
  */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import { Loader2 } from "lucide-react";
 import { AuthLayout } from "@/components/auth/AuthLayout";
 import { LoginForm } from "@/components/auth/LoginForm";
 import { useAuthStore } from "@/store/authStore";
@@ -15,7 +16,8 @@ import { useAuthStore } from "@/store/authStore";
 /** LoginPage 组件 */
 export default function LoginPage() {
   const navigate = useNavigate();
-  const { isAuthenticated, error } = useAuthStore();
+  const { isAuthenticated, error, guestLogin, loading } = useAuthStore();
+  const [guestLoading, setGuestLoading] = useState(false);
 
   // 已登录则重定向
   useEffect(() => {
@@ -27,6 +29,19 @@ export default function LoginPage() {
   /** 登录成功回调 */
   function handleLoginSuccess() {
     navigate("/documents", { replace: true });
+  }
+
+  /** 游客登录处理 */
+  async function handleGuestLogin() {
+    setGuestLoading(true);
+    try {
+      await guestLogin();
+      navigate("/chat", { replace: true });
+    } catch {
+      // 错误已由 store 设置到 error 字段
+    } finally {
+      setGuestLoading(false);
+    }
   }
 
   return (
@@ -52,6 +67,30 @@ export default function LoginPage() {
         </div>
       )}
       <LoginForm onSuccess={handleLoginSuccess} />
+
+      {/* 分割线 */}
+      <div className="relative my-4">
+        <div className="absolute inset-0 flex items-center">
+          <span className="w-full border-t border-line" />
+        </div>
+        <div className="relative flex justify-center text-xs">
+          <span className="bg-surface px-2 text-ink-tertiary">或</span>
+        </div>
+      </div>
+
+      {/* 游客登录按钮 */}
+      <button
+        type="button"
+        onClick={handleGuestLogin}
+        disabled={guestLoading || loading}
+        className="w-full rounded-lg border border-line bg-surface py-2.5 text-sm font-medium text-ink-secondary transition hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {guestLoading ? (
+          <Loader2 className="mx-auto h-4 w-4 animate-spin" />
+        ) : (
+          "游客登录（限 20 次提问）"
+        )}
+      </button>
     </AuthLayout>
   );
 }

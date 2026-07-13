@@ -2,12 +2,17 @@
 OpenAI 兼容 Embedding 客户端
 
 作用：
-    封装 LangChain OpenAIEmbeddings，提供带熔断保护的向量化调用。
-    兼容 OpenAI / 智谱 / Ollama(OpenAI模式) 等。
+    封装 openai SDK 直接调用，提供带熔断保护的向量化调用。
+    兼容 OpenAI / 阿里云 / 智谱 / Ollama(OpenAI模式) 等。
+
+技术决策：
+    使用 openai.OpenAI 直接调用而非 langchain_openai.OpenAIEmbeddings，
+    以支持 dimensions 参数（阿里云 text-embedding-v4 等模型需显式指定输出维度，
+    确保向量维度与 DB pgvector 列一致）。
 
 容错机制：
     1. 熔断器（Redis）：在线 API 持续失败时快速失败
-    2. 超时控制：request_timeout 限制单次调用
+    2. 超时控制：timeout 限制单次调用
 
 使用方式：
     client = OpenAIEmbeddingClient(config)
@@ -31,12 +36,13 @@ class OpenAIEmbeddingClient(EmbeddingModelClient):
     OpenAI 兼容 Embedding 客户端
 
     作用：
-        封装 OpenAIEmbeddings，提供 embed_query 接口。
+        封装 openai.OpenAI SDK，提供 embed_query 接口。
         内置熔断器保护，失败时由路由器切换到降级端点。
+        支持 dimensions 参数，确保向量维度与 DB pgvector 列一致。
 
     容错流程：
         1. 熔断器检查 → 打开则快速失败
-        2. 调用 OpenAIEmbeddings.embed_query
+        2. 调用 openai.OpenAI.embeddings.create（含 dimensions 参数）
         3. 成功 → record_success
         4. 可重试错误 → record_failure + 抛异常（由路由器选下一个端点）
     """
@@ -49,26 +55,27 @@ class OpenAIEmbeddingClient(EmbeddingModelClient):
             config: ProviderEndpointConfig - 端点配置
         """
         super().__init__(config)
-        self._embeddings = None  # 懒加载
+        self._client = None  # 懒加载
 
     @property
-    def embeddings(self):
+    def client(self):
         """
-        获取 OpenAIEmbeddings 实例（懒加载）
+        获取 OpenAI 客户端实例（懒加载）
 
         作用：
-            首次访问时创建 OpenAIEmbeddings 实例。
+            首次访问时创建 openai.OpenAI 客户端实例。
+            直接使用 openai SDK 而非 langchain_openai.OpenAIEmbeddings，
+            以支持 dimensions 参数（阿里云 text-embedding-v4 等模型需显式指定输出维度）。
             懒加载避免应用启动时就创建连接（需要 API Key）。
         """
-        if self._embeddings is None:
-            from langchain_openai import OpenAIEmbeddings
-            self._embeddings = OpenAIEmbeddings(
-                model=self.config.model,
-                openai_api_key=self.config.api_key,
-                openai_api_base=self.config.api_base,
-                request_timeout=self.config.timeout,
+        if self._client is None:
+            from openai import OpenAI
+            self._client = OpenAI(
+                api_key=self.config.api_key,
+                base_url=self.config.api_base,
+                timeout=self.config.timeout,
             )
-        return self._embeddings
+        return self._client
 
     @property
     def dimension(self) -> int:
@@ -109,7 +116,19 @@ class OpenAIEmbeddingClient(EmbeddingModelClient):
             )
 
         try:
-            vector = self.embeddings.embed_query(text)
+            # 构建 API 调用参数
+            # dimensions 参数：显式指定输出维度，确保与 DB 向量列维度一致
+            # 兼容性：阿里云 text-embedding-v4 / OpenAI text-embedding-3-* 支持；
+            #         旧模型（如 ada-002）不支持，API 会返回错误（由路由器降级处理）
+            kwargs = {
+                "model": self.config.model,
+                "input": text,
+            }
+            if self.config.dimension:
+                kwargs["dimensions"] = self.config.dimension
+
+            response = self.client.embeddings.create(**kwargs)
+            vector = response.data[0].embedding
             self.breaker.record_success()
             return vector
         except Exception as e:
@@ -130,6 +149,6 @@ class OpenAIEmbeddingClient(EmbeddingModelClient):
         释放资源
 
         作用：
-            OpenAIEmbeddings 无显式资源需释放。
+            释放 openai.OpenAI 客户端引用，允许 GC 回收连接池。
         """
-        self._embeddings = None
+        self._client = None

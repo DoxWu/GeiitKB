@@ -43,6 +43,7 @@ function createMockDocument(overrides?: Partial<DocumentResponse>): DocumentResp
     file_size: 1024,
     status: "completed",
     visibility: "private",
+    folder_id: null,
     processing_step: null,
     processing_progress: 100,
     quality_score: 85,

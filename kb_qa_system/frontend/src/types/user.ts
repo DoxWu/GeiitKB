@@ -20,6 +20,8 @@ export interface UserResponse {
   is_active: boolean;
   /** 是否为超级管理员 */
   is_superuser: boolean;
+  /** 用户类型（regular 正式用户 / guest 临时用户） */
+  user_type: string;
   /** 创建时间（ISO 8601 字符串） */
   created_at: string;
 }

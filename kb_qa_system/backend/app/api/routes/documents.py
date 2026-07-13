@@ -23,6 +23,7 @@ import os
 import uuid
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Path, Request
+from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
@@ -30,10 +31,10 @@ from typing import Any, Optional
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.core.url_validator import validate_url, URLValidationError, sanitize_filename
+from app.core.url_validator import validate_url, URLValidationError, sanitize_filename, validate_document_title
 from app.core.rate_limit import rate_limit
 from app.core.redis import RedisManager, RedisKeys
-from app.api.deps import get_current_active_user
+from app.api.deps import get_current_active_user, get_current_regular_user
 from app.models.user import User
 from app.models.document import Document
 from app.schemas.document import (
@@ -41,6 +42,7 @@ from app.schemas.document import (
     DocumentListResponse,
     TaskStatusResponse,
     DocumentProcessSummary,
+    DocumentRenameRequest,
 )
 from app.services.document_processor import document_processor
 from app.services.permission import permission_service, VISIBILITY_PRIVATE, VISIBILITY_PUBLIC
@@ -114,7 +116,8 @@ async def upload_document(
         description="可见性：private 个人文档库（默认）/ public 公共文档库（仅管理员）"
     ),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    # 任务5：上传接口限制为正式用户，guest 用户返回 403
+    current_user: User = Depends(get_current_regular_user),
 ) -> Any:
     """
     上传文档接口（生产版）
@@ -397,6 +400,14 @@ def list_documents(
         default="accessible",
         description="范围：accessible 我可访问的（自己的+公共库，默认）/ mine 我上传的 / public 公共文档库"
     ),
+    # 修复 Issue 7：添加 folder_id 查询参数，实现分支文档隔离显示
+    # 作用：此前 list_documents 不接受 folder_id，导致前端切换分支时仍返回所有文档，
+    #       任意分支都能看见几乎所有文档。修复后按 folder_id 精确过滤。
+    #       - folder_id 传入具体值：仅返回该分支下的文档
+    #       - folder_id 未传（None）：保持原行为（不按分支过滤）
+    folder_id: Optional[int] = Query(
+        None, ge=1, description="文档库分支ID（传入时仅返回该分支下的文档）"
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> Any:
@@ -418,6 +429,9 @@ def list_documents(
         【D2-01 全文检索】search 参数使用 to_tsvector + @@ 全文检索，
         同时保留 ilike 作为短词降级兼容。
 
+        【Issue 7 分支隔离】folder_id 传入时仅返回该分支下的文档，
+        未传入时不按分支过滤（保持向后兼容）。
+
     查询参数：
         - page: 页码，默认 1（cursor 模式下忽略）
         - page_size: 每页数量，默认 10
@@ -425,6 +439,7 @@ def list_documents(
         - search: 搜索关键词（标题全文检索）
         - status: 状态筛选（pending/processing/completed/failed/low_quality）
         - scope: 范围（accessible/mine/public）
+        - folder_id: 文档库分支ID（可选，传入时仅返回该分支下的文档）
 
     响应（200）：
         {
@@ -462,6 +477,12 @@ def list_documents(
     # 状态筛选
     if status:
         query = query.filter(Document.status == status)
+
+    # 修复 Issue 7：分支文档隔离过滤
+    # 作用：folder_id 传入时仅返回该分支下的文档，实现分支隔离显示
+    # 注意：folder_id 来自前端当前选中的分支，未选中分支时为 None（显示全部）
+    if folder_id is not None:
+        query = query.filter(Document.folder_id == folder_id)
 
     # D2-01 全文检索：search 参数使用 to_tsvector + @@ 操作符
     # 作用：利用 PostgreSQL GIN 索引加速搜索，ilike 作为短词降级兼容
@@ -795,6 +816,370 @@ def reprocess_document(
 
 
 # ============================================
+# 移动文档到其他分支
+# ============================================
+
+@router.patch(
+    "/{document_id}/move",
+    response_model=DocumentResponse,
+    summary="移动文档到其他分支"
+)
+def move_document(
+    # L-4 修复：路径参数正整数校验
+    document_id: int = Path(..., ge=1, description="文档ID（正整数）"),
+    # 目标分支ID（null 表示移出分支，归入"未分类"）
+    folder_id: Optional[int] = Query(
+        None, description="目标分支ID（null 表示移出分支，归入未分类）"
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Any:
+    """
+    移动文档到其他分支
+
+    作用：
+        将文档从一个分支移动到另一个分支，或移出分支（归入未分类）。
+        用于文档分类管理，支持跨分支迁移。
+
+    实现方式：
+        1. 验证文档存在且用户有管理权限
+        2. 验证目标分支存在且属于当前用户
+        3. 更新文档的 folder_id
+        4. 返回更新后的文档信息
+
+    路径参数：
+        - document_id: 文档ID
+
+    查询参数：
+        - folder_id: 目标分支ID（null 表示移出分支）
+
+    错误：
+        404: 文档不存在或无权操作
+        400: 目标分支不存在或不属于当前用户
+    """
+    # 权限校验：移动属于管理操作（自己的 / 超级管理员）
+    if not permission_service.can_manage_document(
+        db, current_user.id, document_id, current_user.is_superuser
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "DOCUMENT_NOT_FOUND", "message": "文档不存在或无权操作"}}
+        )
+
+    document = db.query(Document).filter(
+        Document.id == document_id,
+        Document.is_deleted == False,
+    ).first()
+
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "DOCUMENT_NOT_FOUND", "message": "文档不存在"}}
+        )
+
+    # M-4 修复：超级管理员移动他人文档时记录审计日志
+    if current_user.is_superuser and document.user_id != current_user.id:
+        _audit_superuser_action(
+            action="move",
+            superuser_id=current_user.id,
+            document_id=document_id,
+            owner_id=document.user_id,
+            extra={"target_folder_id": folder_id},
+        )
+
+    # 验证目标分支（如果指定了 folder_id）
+    if folder_id is not None:
+        from app.models.document_folder import DocumentFolder
+        target_folder = db.query(DocumentFolder).filter(
+            DocumentFolder.id == folder_id,
+        ).first()
+        if not target_folder:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": {"code": "FOLDER_NOT_FOUND", "message": "目标分支不存在"}}
+            )
+        # 分支是用户私有的，只能移动到自己的分支
+        # 例外：超级管理员可移动到任意分支
+        if target_folder.user_id != current_user.id and not current_user.is_superuser:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"error": {"code": "FOLDER_ACCESS_DENIED", "message": "无权使用该分支"}}
+            )
+
+    # 更新文档的 folder_id
+    document.folder_id = folder_id
+    db.commit()
+    db.refresh(document)
+
+    logger.info(
+        f"文档已移动: doc_id={document_id}, target_folder_id={folder_id}, "
+        f"operator={current_user.id}"
+    )
+
+    return document
+
+
+# ============================================
+# 获取文档内容（预览）- 任务3
+# ============================================
+
+# 文本类文件扩展名集合
+# 作用：判断文件是否可直接以文本形式返回预览
+_TEXT_PREVIEW_TYPES = {"txt", "md", "csv", "json", "text", "markdown"}
+
+# 文本预览最大字节数（10MB）
+# 作用：防止超大文本文件一次性读入内存导致 OOM
+_TEXT_PREVIEW_MAX_SIZE = 10 * 1024 * 1024
+
+
+@router.get(
+    "/{document_id}/content",
+    summary="获取文档内容（预览）",
+)
+def get_document_content(
+    document_id: int = Path(..., ge=1, description="文档ID（正整数）"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Any:
+    """
+    获取文档内容（预览）
+
+    作用：
+        返回文档的原始内容，供前端 DocumentPreview 组件预览展示。
+        按文件类型返回不同响应：
+        - 文本类（txt/md/csv/json）：返回纯文本，前端用 <pre> 渲染
+        - PDF：返回文件流（FileResponse），前端用 <iframe> 内联预览
+        - DOCX：用 python-docx 提取文本返回（依赖不存在时降级为下载）
+        - 其他格式：返回 415 Unsupported Media Type
+
+    实现方式：
+        1. 权限校验（can_access_document，与 get_document 一致）
+        2. 拼接文件绝对路径（防路径遍历：仅取 basename）
+        3. 按文件类型分支返回
+
+    路径参数：
+        - document_id: 文档ID
+
+    响应：
+        - 200: 文档内容（PlainTextResponse 或 FileResponse）
+        - 404: 文档不存在或无权访问
+        - 415: 不支持预览的文件类型
+        - 500: 读取失败
+
+    错误：
+        404: 文档不存在或无权访问
+        415: 不支持预览的文件类型
+    """
+    # 权限校验：可访问 = 自己上传的 / 公共文档库 / 超级管理员
+    # 作用：与 get_document 保持一致权限，不泄露文档存在性
+    if not permission_service.can_access_document(
+        db, current_user.id, document_id, current_user.is_superuser
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "DOCUMENT_NOT_FOUND", "message": "文档不存在或无权访问"}}
+        )
+
+    document = db.query(Document).filter(
+        Document.id == document_id,
+        Document.is_deleted == False,
+    ).first()
+
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "DOCUMENT_NOT_FOUND", "message": "文档不存在"}}
+        )
+
+    # 拼接绝对路径（防路径遍历：只用 basename，忽略任何路径前缀）
+    # 作用：document.file_path 存储的是相对路径，通过 basename 提取文件名后与 UPLOAD_DIR 拼接
+    #       防止恶意构造的 file_path 访问上传目录外的文件
+    file_abs_path = os.path.join(settings.UPLOAD_DIR, os.path.basename(document.file_path))
+    if not os.path.exists(file_abs_path):
+        logger.error(f"文档文件不存在: doc_id={document_id}, path={file_abs_path}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "FILE_NOT_FOUND", "message": "文件不存在于服务器"}}
+        )
+
+    # 统一文件类型（小写、去前导点）
+    file_type = document.file_type.lower().lstrip(".")
+
+    # 文本类：读取并返回文本内容
+    if file_type in _TEXT_PREVIEW_TYPES:
+        # 大文件保护：超过 10MB 拒绝预览，避免 OOM
+        file_size = os.path.getsize(file_abs_path)
+        if file_size > _TEXT_PREVIEW_MAX_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail={
+                    "error": {
+                        "code": "FILE_TOO_LARGE_FOR_PREVIEW",
+                        "message": f"文件过大（{file_size // 1024 // 1024}MB），不支持在线预览，请下载后查看"
+                    }
+                },
+            )
+        try:
+            with open(file_abs_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
+        except Exception as e:
+            logger.error(f"读取文档内容失败: doc_id={document_id}, error={e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={"error": {"code": "READ_FAILED", "message": "读取文档内容失败"}},
+            )
+
+    # PDF：返回文件流（前端 iframe 内联预览）
+    # 作用：FileResponse 默认 Content-Disposition: inline，浏览器内联渲染 PDF
+    if file_type == "pdf":
+        return FileResponse(
+            path=file_abs_path,
+            media_type="application/pdf",
+            filename=document.file_name,
+        )
+
+    # DOCX：用 python-docx 提取文本
+    # 作用：DOCX 无法直接在浏览器渲染，提取文本后以纯文本形式预览
+    if file_type == "docx":
+        try:
+            from docx import Document as DocxDocument
+            doc = DocxDocument(file_abs_path)
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            extracted_text = "\n".join(paragraphs) if paragraphs else "（文档内容为空）"
+            return PlainTextResponse(extracted_text, media_type="text/plain; charset=utf-8")
+        except ImportError:
+            # python-docx 未安装，降级为文件下载
+            # 作用：不强制引入依赖，未安装时允许用户下载查看
+            logger.info("python-docx 未安装，DOCX 预览降级为下载")
+            return FileResponse(path=file_abs_path, filename=document.file_name)
+        except Exception as e:
+            logger.error(f"DOCX 文本提取失败: doc_id={document_id}, error={e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={"error": {"code": "DOCX_PARSE_FAILED", "message": "DOCX 文档解析失败"}},
+            )
+
+    # 不支持预览的文件类型
+    raise HTTPException(
+        status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        detail={
+            "error": {
+                "code": "UNSUPPORTED_PREVIEW_TYPE",
+                "message": f"不支持预览 {file_type} 类型文件，请下载后查看"
+            }
+        },
+    )
+
+
+# ============================================
+# 重命名文档 - 任务4
+# ============================================
+
+@router.patch(
+    "/{document_id}/rename",
+    response_model=DocumentResponse,
+    summary="重命名文档",
+)
+def rename_document(
+    document_id: int = Path(..., ge=1, description="文档ID（正整数）"),
+    body: DocumentRenameRequest = ...,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Any:
+    """
+    重命名文档
+
+    作用：
+        修改文档的 title 字段（显示标题），不影响 file_name（原始文件名）。
+        新标题经过安全校验（validate_document_title），防止：
+        - 特殊字符注入（控制字符、路径分隔符）
+        - 恶意代码（XSS：<script> 等 HTML 标签会被 HTML 实体转义）
+        - 路径遍历（../ 序列）
+        - 不适当内容
+
+    实现方式：
+        1. 权限校验（can_manage_document：自己的 / 超级管理员）
+        2. 安全校验新标题（validate_document_title）
+        3. 更新 title 字段并提交
+        4. 超管操作他人文档时记录审计日志
+
+    路径参数：
+        - document_id: 文档ID
+
+    请求体：
+        {
+            "title": "新文档标题"
+        }
+
+    响应（200）：
+        更新后的文档信息
+
+    错误：
+        400: 标题包含非法字符或过长
+        404: 文档不存在或无权操作
+    """
+    # 权限校验：重命名属于管理操作（自己的 / 超级管理员）
+    # 作用：公共文档仅上传者和管理员能重命名
+    if not permission_service.can_manage_document(
+        db, current_user.id, document_id, current_user.is_superuser
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "DOCUMENT_NOT_FOUND", "message": "文档不存在或无权操作"}}
+        )
+
+    document = db.query(Document).filter(
+        Document.id == document_id,
+        Document.is_deleted == False,
+    ).first()
+
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "DOCUMENT_NOT_FOUND", "message": "文档不存在"}}
+        )
+
+    # M-4 修复：超级管理员重命名他人文档时记录审计日志
+    if current_user.is_superuser and document.user_id != current_user.id:
+        _audit_superuser_action(
+            action="rename",
+            superuser_id=current_user.id,
+            document_id=document_id,
+            owner_id=document.user_id,
+            extra={"old_title": document.title, "new_title": body.title},
+        )
+
+    # 安全校验新标题
+    # 作用：validate_document_title 会检测危险字符并 HTML 转义，防止 XSS 和路径遍历
+    try:
+        safe_title = validate_document_title(body.title)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": {"code": "INVALID_TITLE", "message": str(e)}},
+        )
+
+    # 检查标题是否实际变化（避免无意义的写操作）
+    if document.title == safe_title:
+        # 标题未变化，直接返回当前文档（幂等）
+        return document
+
+    # 更新标题
+    old_title = document.title
+    document.title = safe_title
+    db.commit()
+    db.refresh(document)
+
+    logger.info(
+        f"文档重命名: doc_id={document_id}, old='{old_title}', new='{safe_title}', "
+        f"operator={current_user.id}"
+    )
+
+    return document
+
+
+# ============================================
 # 查询任务状态
 # ============================================
 
@@ -856,8 +1241,17 @@ def get_document_task_status(
         try:
             from app.core.celery_app import get_task_status
             task_info = get_task_status(document.task_id)
-            # 用文档记录中的进度覆盖（更精确）
-            task_info["progress"] = document.processing_progress
+            # 修复 Issue 5：用文档记录中的进度覆盖 Celery 进度
+            # 作用：document_tasks.py 的进度回调会实时更新 document.processing_progress，
+            #       比 Celery 原生进度更精确（Celery 不记录业务进度）。
+            #       但当文档状态已为终态（completed/failed）时，直接用 100/0 避免不一致。
+            if document.status == "completed":
+                task_info["progress"] = 100
+            elif document.status == "failed":
+                task_info["progress"] = 0
+            else:
+                # 处理中：使用文档记录的进度（由进度回调实时更新）
+                task_info["progress"] = document.processing_progress
             return task_info
         except Exception as e:
             logger.warning(f"查询 Celery 任务状态失败: {e}")
@@ -910,7 +1304,8 @@ def import_from_url(
         description="可见性：private 个人文档库（默认）/ public 公共文档库（仅管理员）"
     ),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    # 任务5：URL 导入接口限制为正式用户，guest 用户返回 403
+    current_user: User = Depends(get_current_regular_user),
 ) -> Any:
     """
     从 URL 导入文档
@@ -970,12 +1365,33 @@ def import_from_url(
             },
         )
 
-    # 2. 下载网页并提取正文
+    # 2. 下载网页并提取正文（含图片文本，任务3增强）
     try:
         text = document_processor.extract_from_url(validated_url)
         if not text.strip():
             raise ValueError("网页内容为空")
+    except ValueError as e:
+        # 任务3：区分 URL_NOT_HTML（非 HTML 资源）和其他 ValueError
+        # 作用：URL 指向图片/PDF 等非网页资源时给出明确提示，而非笼统的"下载失败"
+        error_msg = str(e)
+        if "URL_NOT_HTML" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": {
+                        "code": "URL_NOT_HTML",
+                        "message": "URL 指向的不是网页（可能是图片、PDF 等），请提供 HTML 页面链接"
+                    }
+                },
+            )
+        # 其他 ValueError（内容为空、大小超限、重定向等）
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": {"code": "URL_FETCH_FAILED", "message": "网页内容为空或下载失败，请检查 URL 是否可访问"}}
+        )
     except Exception as e:
+        # 网络错误、超时等
+        logger.error(f"URL 导入失败（url={validated_url[:100]}）: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": {"code": "URL_FETCH_FAILED", "message": "网页内容下载失败，请检查 URL 是否可访问"}}

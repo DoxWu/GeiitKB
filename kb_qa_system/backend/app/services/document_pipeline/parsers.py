@@ -282,62 +282,96 @@ class UrlParser:
         text = parser.parse("https://example.com/article")
     """
 
-    # 请求头，模拟浏览器访问
+    # 请求头，模拟真实浏览器访问
+    # 作用：部分网站（如百度百科）反爬机制会拒绝请求头不完整的请求，
+    #       返回 403/412 等状态码。完整请求头可提高网页导入成功率。
     _HEADERS = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
-        )
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
     }
 
-    def parse(self, url: str, timeout: int = 30) -> str:
+    def _download_html(self, url: str, timeout: int = 30, _redirect_count: int = 0) -> tuple:
         """
-        下载并解析网页
+        下载网页 HTML（内部方法，供 parse 和 parse_with_images 复用）
 
         作用：
-            下载网页 HTML，提取正文文本。
+            执行带 SSRF 防护的 HTTP 下载，返回响应内容和 response 对象。
+            调用方负责关闭 response 和检测 Content-Type。
 
-        实现方式：
-            1. requests 下载页面
-            2. BeautifulSoup 解析 HTML
-            3. 移除 script/style/nav 等非正文标签
-            4. 提取纯文本，去除多余空白
+        安全防护：
+            - C-1: 禁用重定向（防止 SSRF 绕过）
+            - C-8: 流式下载 + 大小限制（防止 OOM）
 
         参数：
-            url: str - 网页 URL
+            url: str - 网页 URL（已经过 validate_url 校验）
             timeout: int - 超时时间（秒）
 
-        返回：
-            str - 提取的正文文本
+        返回:
+            tuple[bytes, requests.Response] - (响应内容, response 对象)
+            调用方负责调用 response.close()
 
         异常：
-            requests.RequestException - 下载失败
+            ValueError - 重定向或大小超限时抛出
+            requests.RequestException - 网络/HTTP 错误
         """
-        # C-1 + C-8 修复：禁用重定向 + 流式下载 + 大小限制
-        # C-1 作用：validate_url 仅校验初始 URL，若允许重定向，攻击者可让公网域名
-        #           302 跳转到 169.254.169.254（云元数据）或内网地址，绕过所有 SSRF 防护
-        #           修复：allow_redirects=False，遇到 3xx 直接拒绝
-        # C-8 作用：原实现整个 response.content 读入内存，无大小限制，攻击者指向超大文件导致 OOM
-        #           修复：stream=True 流式下载，边读边检查累计字节数，超限立即中止
+        # C-1 + C-8 修复：禁用自动重定向 + 流式下载 + 大小限制
+        # 安全策略：不使用 requests 自动重定向，手动跟随并校验每个重定向目标
         response = requests.get(
             url,
             headers=self._HEADERS,
             timeout=timeout,
-            allow_redirects=False,  # C-1: 禁用重定向，防止 SSRF 绕过
+            allow_redirects=False,  # C-1: 禁用自动重定向，手动校验后跟随
             stream=True,            # C-8: 流式下载，便于边读边检查大小
         )
 
-        # C-1: 拒绝任何重定向响应（301/302/303/307/308）
-        # 作用：业务上单页文档导入不需要跟随重定向，用户应直接提供最终 URL
+        # C-1: 安全的重定向跟随（手动校验每个目标 URL）
+        # 作用：部分网站（如百度百科）会 302 重定向到规范 URL，
+        #       完全禁止重定向会导致导入失败；但自动重定向有 SSRF 风险
+        #       （重定向到内网地址），折中方案：手动获取 Location →
+        #       SSRF 校验 → 递归调用，最多 3 次
         if response.is_redirect or response.is_permanent_redirect:
             response.close()
-            raise ValueError(f"安全策略禁止 URL 重定向，请提供最终 URL（target={url}）")
+
+            if _redirect_count >= 3:
+                raise ValueError(
+                    f"URL 重定向次数超过限制（最多 3 次，target={url[:100]}）"
+                )
+
+            location = response.headers.get("Location")
+            if not location:
+                raise ValueError("重定向响应缺少 Location 头")
+
+            # 解析相对路径为绝对 URL
+            from urllib.parse import urljoin
+            redirect_url = urljoin(url, location)
+
+            # SSRF 校验重定向目标（与初始 URL 同等防护）
+            from app.core.url_validator import validate_url, URLValidationError
+            from app.core.config import settings as _settings
+            try:
+                validate_url(redirect_url, allow_private=_settings.is_development)
+            except URLValidationError:
+                raise ValueError(
+                    f"重定向目标不安全，已拦截: {redirect_url[:100]}"
+                )
+
+            logger.info(
+                f"URL 重定向跟随（{_redirect_count + 1}/3）: "
+                f"{url[:80]} → {redirect_url[:80]}"
+            )
+            return self._download_html(redirect_url, timeout, _redirect_count + 1)
 
         response.raise_for_status()
 
         # C-8: 检查 Content-Length（若服务端提供）
-        # 作用：在下载前即可拒绝超大文件，避免无谓的网络传输
         from app.core.config import settings
         max_size = settings.URL_IMPORT_MAX_SIZE
         content_length = response.headers.get("Content-Length")
@@ -348,8 +382,6 @@ class UrlParser:
             )
 
         # C-8: 流式读取 + 边写边检查累计大小
-        # 作用：即使无 Content-Length（如 chunked transfer），也通过累计字节数限制
-        #       超过 max_size 立即中止下载，防止 OOM
         downloaded = 0
         chunks = []
         for chunk in response.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
@@ -363,14 +395,80 @@ class UrlParser:
                 )
             chunks.append(chunk)
 
-        response.close()
         content = b"".join(chunks)
+        # 注意：不在此处 close response，调用方需要读取 headers（如 Content-Type）
+        return content, response
+
+    @staticmethod
+    def _is_html_content(content_type: str) -> bool:
+        """
+        判断响应是否为 HTML 内容
+
+        作用：
+            检测 Content-Type 是否为 text/html 或 application/xhtml+xml。
+            用于拦截图片、PDF、视频等非网页资源的导入。
+            无 Content-Type 时默认按 HTML 处理（兼容部分服务器不返回该头）。
+
+        参数：
+            content_type: str - HTTP 响应的 Content-Type 头（已转小写）
+
+        返回:
+            bool - True 表示是 HTML 内容
+        """
+        if not content_type:
+            return True
+        return (
+            "text/html" in content_type
+            or "application/xhtml+xml" in content_type
+            or "text/plain" in content_type  # 部分服务器对 HTML 返回 text/plain
+        )
+
+    def parse(self, url: str, timeout: int = 30) -> str:
+        """
+        下载并解析网页（纯文本提取）
+
+        作用：
+            下载网页 HTML，提取正文文本。
+            含 Content-Type 检测：非 HTML 资源抛出 ValueError("URL_NOT_HTML:...")。
+
+        实现方式：
+            1. _download_html 下载页面（含 SSRF 防护）
+            2. 检测 Content-Type，非 HTML 抛出明确异常
+            3. BeautifulSoup 解析 HTML
+            4. 移除 script/style/nav 等非正文标签
+            5. 提取纯文本，去除多余空白
+
+        参数：
+            url: str - 网页 URL
+            timeout: int - 超时时间（秒）
+
+        返回:
+            str - 提取的正文文本
+
+        异常:
+            ValueError - 重定向/大小超限/非 HTML 资源时抛出
+                非 HTML 资源异常消息含 "URL_NOT_HTML" 标识
+            requests.RequestException - 下载失败
+        """
+        content, response = self._download_html(url, timeout)
+
+        # 任务3：Content-Type 检测
+        # 作用：URL 指向图片等非 HTML 资源时，BeautifulSoup 解析为空文本
+        #       会被误判为"网页内容为空"→ HTTP 400，错误信息不友好
+        #       修复：检测 Content-Type，非 HTML 时抛出带 URL_NOT_HTML 标识的异常
+        content_type = response.headers.get("Content-Type", "").lower()
+        response.close()
+
+        if not self._is_html_content(content_type):
+            raise ValueError(
+                f"URL_NOT_HTML:URL 指向非 HTML 资源（Content-Type: {content_type}），"
+                f"无法作为文档导入"
+            )
 
         # BeautifulSoup 解析
         soup = BeautifulSoup(content, "html.parser")
 
         # 移除非正文标签
-        # 作用：导航栏、页脚、脚本、样式等不含正文内容
         for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
             tag.decompose()
 
@@ -380,6 +478,304 @@ class UrlParser:
         # 去除多余空行
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         return "\n".join(lines)
+
+    def parse_with_images(self, url: str, timeout: int = 30) -> str:
+        """
+        下载网页并提取正文 + 图片文本（任务3）
+
+        作用：
+            一次下载网页，提取纯文本和图片文本，拼接返回。
+            避免重复下载。图片文本由 OCR/多模态模型生成。
+
+        实现方式:
+            1. _download_html 下载页面（含 SSRF 防护）
+            2. 检测 Content-Type，非 HTML 抛出 URL_NOT_HTML 异常
+            3. BeautifulSoup 解析 HTML
+            4. 移除非正文标签
+            5. 提取正文文本
+            6. 提取图片文本（OCR + 多模态描述）
+            7. 拼接正文 + 图片文本返回
+
+        参数：
+            url: str - 网页 URL
+            timeout: int - 超时时间（秒）
+
+        返回:
+            str - 正文文本 + 图片文本
+
+        异常:
+            ValueError - 重定向/大小超限/非 HTML 资源时抛出
+            requests.RequestException - 下载失败
+        """
+        content, response = self._download_html(url, timeout)
+
+        # Content-Type 检测
+        content_type = response.headers.get("Content-Type", "").lower()
+        response.close()
+
+        if not self._is_html_content(content_type):
+            raise ValueError(
+                f"URL_NOT_HTML:URL 指向非 HTML 资源（Content-Type: {content_type}）"
+            )
+
+        soup = BeautifulSoup(content, "html.parser")
+
+        # 移除非正文标签
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            tag.decompose()
+
+        # 提取正文文本
+        text = soup.get_text(separator="\n", strip=True)
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        text = "\n".join(lines)
+
+        # 提取图片文本
+        # 作用：将网页中的图片转为文本（OCR/描述），纳入检索范围
+        # 失败不影响文本导入（内部 catch all）
+        try:
+            from app.services.document_pipeline.image_processor import ImageProcessor
+            image_processor = ImageProcessor()
+            image_text = self.extract_image_texts(soup, url, image_processor)
+            if image_text:
+                separator = "=" * 40
+                text = (
+                    text + "\n\n" + separator + "\n图片内容\n" + separator + "\n" + image_text
+                )
+        except Exception as e:
+            logger.warning(f"网页图片提取失败，跳过图片文本: {e}")
+
+        return text
+
+    # ============================================
+    # 网页图片提取（任务3）
+    # ============================================
+
+    def extract_image_texts(
+        self,
+        soup: BeautifulSoup,
+        base_url: str,
+        image_processor: Optional[object] = None,
+    ) -> str:
+        """
+        从网页 HTML 中提取图片并转为文本
+
+        作用：
+            遍历 <img> 标签，下载图片，过滤小图片，
+            使用 OCR/多模态模型生成文本描述，附加到正文。
+            单张图片失败不影响整体导入。
+
+        实现方式：
+            1. 解析 <img> 标签，提取 src 属性
+            2. 相对 URL 转绝对 URL
+            3. SSRF 校验（复用 url_validator）
+            4. 逐张下载，检测尺寸，过滤小图片
+            5. 调用 ImageProcessor 生成 OCR/描述文本
+            6. 拼接所有图片文本返回
+
+        参数：
+            soup: BeautifulSoup - 已解析的 HTML
+            base_url: str - 网页基础 URL（用于解析相对路径）
+            image_processor: Optional[ImageProcessor] - 图片处理器
+                为 None 则跳过 OCR/Vision，仅返回图片 URL 元信息
+
+        返回:
+            str - 拼接的图片文本（无图片时返回空字符串）
+        """
+        from app.core.config import settings
+        from urllib.parse import urljoin
+
+        img_tags = soup.find_all("img")
+        if not img_tags:
+            return ""
+
+        # 限制图片数量，避免过多图片拖慢导入
+        img_tags = img_tags[: settings.URL_IMAGE_MAX_COUNT]
+
+        image_texts: List[str] = []
+        for idx, img in enumerate(img_tags, start=1):
+            src = img.get("src") or img.get("data-src")
+            if not src:
+                continue
+
+            # 跳过 data URI（base64 内联图片，通常是小图标）
+            if src.startswith("data:"):
+                continue
+
+            # 相对 URL 转绝对 URL
+            img_url = urljoin(base_url, src)
+
+            # SSRF 校验（复用 url_validator，与主 URL 同等防护）
+            try:
+                from app.core.url_validator import validate_url, URLValidationError
+                validate_url(img_url, allow_private=settings.is_development)
+            except URLValidationError:
+                logger.warning(f"图片 URL 安全校验失败，跳过: {img_url[:100]}")
+                continue
+            except Exception as e:
+                logger.warning(f"图片 URL 校验异常，跳过: {e}")
+                continue
+
+            # 下载图片并过滤小图片
+            image_bytes = self._download_and_filter_image(img_url)
+            if image_bytes is None:
+                continue
+
+            # 生成图片文本（OCR + 多模态描述）
+            text = self._generate_image_text(image_bytes, img_url, idx, image_processor)
+            if text:
+                image_texts.append(text)
+
+        return "\n\n".join(image_texts)
+
+    def _download_and_filter_image(self, img_url: str) -> Optional[bytes]:
+        """
+        下载图片并过滤小图片
+
+        作用：
+            下载图片二进制，检测尺寸，小于阈值的跳过（装饰性小图标无检索价值）。
+            下载失败或超时时返回 None，不影响其他图片。
+
+        安全防护：
+            - 禁用重定向（同主 URL）
+            - 大小限制（URL_IMAGE_MAX_SIZE）
+            - 尺寸过滤（URL_IMAGE_MIN_SIZE）
+
+        参数：
+            img_url: str - 图片 URL（已经过 SSRF 校验）
+
+        返回:
+            Optional[bytes] - 图片二进制（小图片或失败时返回 None）
+        """
+        from app.core.config import settings
+
+        try:
+            response = requests.get(
+                img_url,
+                headers=self._HEADERS,
+                timeout=settings.URL_IMAGE_DOWNLOAD_TIMEOUT,
+                allow_redirects=False,  # 同主 URL，禁用重定向
+                stream=True,
+            )
+            if response.is_redirect or response.is_permanent_redirect:
+                response.close()
+                return None
+
+            response.raise_for_status()
+
+            # 检查 Content-Length
+            content_length = response.headers.get("Content-Length")
+            if content_length and int(content_length) > settings.URL_IMAGE_MAX_SIZE:
+                response.close()
+                return None
+
+            # 下载图片
+            image_bytes = response.content
+            response.close()
+
+            if len(image_bytes) > settings.URL_IMAGE_MAX_SIZE:
+                return None
+
+            # 检测图片尺寸，过滤小图片
+            if not self._is_image_large_enough(image_bytes):
+                logger.debug(f"图片尺寸过小，跳过: {img_url[:100]}")
+                return None
+
+            return image_bytes
+
+        except Exception as e:
+            logger.debug(f"图片下载失败（{img_url[:100]}）: {e}")
+            return None
+
+    @staticmethod
+    def _is_image_large_enough(image_bytes: bytes) -> bool:
+        """
+        检测图片尺寸是否大于阈值
+
+        作用：
+            用 PIL 读取图片宽高，小于 URL_IMAGE_MIN_SIZE 则视为小图片（图标/装饰）。
+            非 PIL 支持格式（如 SVG 无固定尺寸）保守放行。
+
+        参数：
+            image_bytes: bytes - 图片二进制数据
+
+        返回:
+            bool - True 表示图片足够大（应保留）
+        """
+        from app.core.config import settings
+
+        try:
+            from PIL import Image
+            import io
+
+            img = Image.open(io.BytesIO(image_bytes))
+            width, height = img.size
+            return width * height >= settings.URL_IMAGE_MIN_SIZE
+        except Exception:
+            # 非 PIL 支持格式（如 SVG）保守放行
+            return True
+
+    def _generate_image_text(
+        self,
+        image_bytes: bytes,
+        img_url: str,
+        idx: int,
+        image_processor: Optional[object],
+    ) -> str:
+        """
+        生成图片文本描述
+
+        作用：
+            将图片二进制保存为临时文件，调用 ImageProcessor 的 OCR/Vision
+            生成文本描述。OCR/Vision 不可用时仅返回图片 URL 元信息。
+
+        参数：
+            image_bytes: bytes - 图片二进制
+            img_url: str - 图片 URL（用于元信息）
+            idx: int - 图片序号
+            image_processor: Optional[ImageProcessor] - 图片处理器
+
+        返回:
+            str - 图片文本描述
+        """
+        import tempfile
+        import os
+
+        tmp_path = None
+        try:
+            # 保存临时文件（ImageProcessor 的 OCR/Vision 接受文件路径）
+            with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as f:
+                f.write(image_bytes)
+                tmp_path = f.name
+
+            ocr_text = ""
+            description = ""
+
+            if image_processor is not None:
+                from app.core.config import settings
+                if settings.ENABLE_OCR:
+                    ocr_text = image_processor._ocr_image(tmp_path)
+                if settings.ENABLE_VISION:
+                    description = image_processor._describe_image(tmp_path)
+
+            # 拼接图片文本
+            parts = [f"[图片{idx}]"]
+            if ocr_text:
+                parts.append(f"OCR文字: {ocr_text}")
+            if description:
+                parts.append(f"图片描述: {description}")
+            if not ocr_text and not description:
+                parts.append(f"来源: {img_url}")
+            return "\n".join(parts)
+
+        except Exception as e:
+            logger.debug(f"图片文本生成失败（{img_url[:100]}）: {e}")
+            return f"[图片{idx}] 来源: {img_url}"
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
 
     def parse_to_context(
         self,

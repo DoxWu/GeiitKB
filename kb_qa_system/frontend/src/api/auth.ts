@@ -39,6 +39,18 @@ export async function login(data: LoginRequest): Promise<TokenResponse> {
 }
 
 /**
+ * 游客临时登录
+ *
+ * 调用 POST /auth/guest-login，创建临时 guest 用户并返回 Token。
+ * guest 用户权限受限：最多 20 次提问、禁止上传文档、仅检索公共库。
+ *
+ * @returns Token 响应
+ */
+export async function guestLogin(): Promise<TokenResponse> {
+  return apiClient.post<TokenResponse>(API_PATHS.GUEST_LOGIN, {});
+}
+
+/**
  * 刷新 Token
  *
  * @param refreshToken - Refresh Token 字符串

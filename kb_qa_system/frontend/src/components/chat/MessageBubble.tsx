@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/types/chat";
 import { SourceCard } from "./SourceCard";
 import { TypingIndicator } from "./TypingIndicator";
+import { MarkdownRenderer } from "./MarkdownRenderer";
 
 /** MessageBubble 组件属性 */
 interface MessageBubbleProps {
@@ -78,8 +79,20 @@ export function MessageBubble({
         >
           {showTypingIndicator ? (
             <TypingIndicator />
+          ) : message.content ? (
+            isUser ? (
+              <p className="whitespace-pre-wrap break-words">{message.content}</p>
+            ) : (
+              <MarkdownRenderer content={message.content} />
+            )
           ) : (
-            <p className="whitespace-pre-wrap break-words">{message.content}</p>
+            // 修复：内容为空时（如 LLM 失败的 fallback 消息）显示占位提示，
+            // 避免出现空白气泡让用户困惑
+            <p className="whitespace-pre-wrap break-words text-ink-tertiary italic">
+              {message.is_degraded
+                ? "智能体未能生成回复，请参考上方提示或重试。"
+                : "（空回复）"}
+            </p>
           )}
         </div>
 

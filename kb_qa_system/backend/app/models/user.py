@@ -61,6 +61,17 @@ class User(Base):
     # 是否是超级管理员（默认 False）
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # 用户类型（任务5）
+    # 作用：区分正式注册用户（regular）与临时登录用户（guest），
+    #       实施差异化权限控制（guest 限提问次数/禁上传/仅公共库）
+    # regular: 正式注册用户，完整权限
+    # guest: 临时登录用户，受限权限（20 次提问/禁上传/仅公共库检索）
+    user_type: Mapped[str] = mapped_column(
+        String(20),
+        default="regular",
+        index=True,
+    )
+
     # 创建时间（服务器默认当前时间）
     created_at: Mapped[datetime] = mapped_column(
         DateTime,

@@ -43,6 +43,11 @@ vi.mock("@/store/toastStore", () => ({
   useToastStore: () => mockToastStore,
 }));
 
+// mock MoveToFolderModal 以避免其从 store 读取 folders（DocumentItem 测试不关注此组件行为）
+vi.mock("../MoveToFolderModal", () => ({
+  MoveToFolderModal: () => null,
+}));
+
 import { DocumentItem } from "../DocumentItem";
 
 /** 创建测试用文档 */
@@ -57,6 +62,7 @@ function createMockDoc(
     file_size: 1024,
     status: "completed",
     visibility: "private",
+    folder_id: null,
     processing_step: null,
     processing_progress: 100,
     quality_score: 85,

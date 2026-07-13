@@ -36,14 +36,18 @@ import type { Conversation } from "@/types/chat";
 
 /** ChatSidebar 组件属性 */
 interface ChatSidebarProps {
-  /** 移动端折叠状态 */
+  /**
+   * 移动端折叠状态（已废弃：可见性由父容器 hidden/block 控制，保留兼容父组件传参）
+   * 此前 collapsed={!sidebarOpen} 在桌面端恒为 true，导致 w-0 侧边栏在正常缩放下不可见，
+   * 仅在 300% 缩放触发移动端布局后才可见。修复后可见性完全由父容器控制。
+   */
   collapsed?: boolean;
-  /** 折叠回调（移动端） */
+  /** 折叠回调（移动端关闭抽屉） */
   onCollapse?: () => void;
 }
 
 /** ChatSidebar 组件 */
-export function ChatSidebar({ collapsed, onCollapse }: ChatSidebarProps) {
+export function ChatSidebar({ onCollapse }: ChatSidebarProps) {
   const navigate = useNavigate();
   const {
     conversations,
@@ -94,9 +98,11 @@ export function ChatSidebar({ collapsed, onCollapse }: ChatSidebarProps) {
   return (
     <aside
       className={cn(
-        "flex h-full w-60 flex-col border-r border-line bg-surface",
-        "transition-transform duration-200",
-        collapsed && "w-0 -translate-x-full overflow-hidden",
+        // 固定 w-60 宽度，始终非透明（bg-surface 为纯白/纯灰，不使用透明度）
+        // 可见性由父容器 ChatPage 的 hidden/block 控制，此处不再用 collapsed 操纵宽度
+        // （此前 collapsed={!sidebarOpen} 在桌面端恒为 true，导致 w-0 侧边栏在正常缩放下不可见，
+        //   仅在 300% 缩放触发移动端布局后才可见）
+        "flex h-full w-60 flex-col border-r border-line bg-surface shadow-xl",
       )}
     >
       {/* 顶部：品牌标识 */}
@@ -209,10 +215,10 @@ export function ChatSidebar({ collapsed, onCollapse }: ChatSidebarProps) {
       </div>
 
       {/* 移动端折叠按钮 */}
-      {collapsed !== undefined && onCollapse && (
+      {onCollapse && (
         <button
           onClick={onCollapse}
-          className="absolute -right-3 top-4 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-line bg-surface shadow-sm"
+          className="absolute -right-3 top-4 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-line bg-surface shadow-sm lg:hidden"
           aria-label="折叠侧边栏"
         >
           <ChevronLeft className="h-3.5 w-3.5" />

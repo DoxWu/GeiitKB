@@ -17,7 +17,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 # ============================================
@@ -326,6 +326,12 @@ class PipelineContext:
     step_stats: Dict[str, StepStats] = field(default_factory=dict)
     total_duration_ms: int = 0
 
+    # 修复 Issue 5：进度回调
+    # 作用：流水线在每个步骤开始/进度更新时调用此回调，供调用方（document_tasks.py）
+    #       实时更新数据库，前端轮询即可看到增量进度，避免一直显示 0% 或 100%。
+    #       回调签名：(step: str, progress: int) -> None
+    progress_callback: Optional[Callable[[str, int], None]] = None
+
     # ============================================
     # 便捷方法
     # ============================================
@@ -363,6 +369,12 @@ class PipelineContext:
         )
         self.step_stats[step_name] = stats
         self.processing_step = step_name
+        # 修复 Issue 5：通知调用方当前步骤已变更，便于实时更新数据库进度
+        if self.progress_callback:
+            try:
+                self.progress_callback(step_name, self.processing_progress)
+            except Exception:
+                pass  # 回调失败不影响流水线
         return stats
 
     def finish_step(
@@ -415,6 +427,12 @@ class PipelineContext:
             progress: int - 进度（0-100）
         """
         self.processing_progress = max(0, min(100, progress))
+        # 修复 Issue 5：通知调用方进度已更新，便于实时写入数据库
+        if self.progress_callback:
+            try:
+                self.progress_callback(self.processing_step, self.processing_progress)
+            except Exception:
+                pass  # 回调失败不影响流水线
 
     def to_chunk_dicts(self) -> List[Dict[str, Any]]:
         """

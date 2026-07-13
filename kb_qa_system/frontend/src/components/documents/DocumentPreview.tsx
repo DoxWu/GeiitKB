@@ -24,12 +24,14 @@ import {
   AlertTriangle,
   FileWarning,
   Loader2,
+  Globe,
+  Lock,
 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import { Badge, Button } from "@/components/common";
 import { useDocumentStore } from "@/store/documentStore";
 import { useToastStore } from "@/store/toastStore";
-import { formatFileSize, formatDate, getStatusLabel } from "@/utils/format";
+import { formatFileSize, formatDate, getStatusLabel, getProcessingStepLabel } from "@/utils/format";
 import {
   getFileIcon,
   isTextPreviewable,
@@ -223,7 +225,7 @@ export function DocumentPreview() {
           {isProcessing && (
             <div className="mt-4 rounded-lg border border-brand-light bg-brand-light/50 p-3">
               <div className="flex items-center justify-between text-xs text-brand">
-                <span>{doc.processing_step || "处理中..."}</span>
+                <span>{getProcessingStepLabel(doc.processing_step)}</span>
                 <span>{doc.processing_progress}%</span>
               </div>
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-surface">
@@ -237,11 +239,11 @@ export function DocumentPreview() {
 
           {/* 错误信息 */}
           {isFailed && doc.error_message && (
-            <div className="mt-4 flex gap-2 rounded-lg border border-red-200 bg-red-50 p-3">
+            <div className="mt-4 flex gap-2 rounded-lg border border-danger/30 bg-danger/10 p-3 dark:border-danger/40 dark:bg-danger/20">
               <AlertTriangle className="h-4 w-4 shrink-0 text-danger" />
               <div>
                 <p className="text-xs font-medium text-danger">处理失败</p>
-                <p className="mt-0.5 text-xs text-ink-secondary">
+                <p className="mt-0.5 text-xs text-danger/90 dark:text-danger/80">
                   {doc.error_message}
                 </p>
               </div>
@@ -341,6 +343,18 @@ export function DocumentPreview() {
                 icon={<HardDrive className="h-3.5 w-3.5" />}
                 label="文件大小"
                 value={formatFileSize(doc.file_size)}
+              />
+              {/* 修复 Issue 8：显示文档库归属 */}
+              <InfoRow
+                icon={
+                  doc.visibility === "public" ? (
+                    <Globe className="h-3.5 w-3.5" />
+                  ) : (
+                    <Lock className="h-3.5 w-3.5" />
+                  )
+                }
+                label="文档库"
+                value={doc.visibility === "public" ? "公共文档库" : "个人文档库"}
               />
               <InfoRow
                 icon={<Calendar className="h-3.5 w-3.5" />}

@@ -66,6 +66,7 @@ class HealthChecker:
         self._registry = registry
         self._task: Optional[asyncio.Task] = None
         self._running = False
+        self._stopped = False  # 优化3：防止 stop 后 fire-and-forget 的 start 延迟执行导致 Task 泄漏
         self._call_logger = get_call_logger()
 
     async def start(self) -> None:
@@ -76,6 +77,10 @@ class HealthChecker:
             创建 asyncio Task 运行健康检查主循环。
             如果已有任务在运行则不重复创建。
         """
+        # 优化3：防止 stop() 后 fire-and-forget 的 start() 延迟执行
+        if self._stopped:
+            logger.warning("健康检查器已停止，拒绝再次启动")
+            return
         if self._running:
             logger.warning("健康检查器已在运行，跳过重复启动")
             return
@@ -92,6 +97,7 @@ class HealthChecker:
             设置运行标志为 False，取消 Task 并等待退出。
         """
         self._running = False
+        self._stopped = True  # 优化3：标记永久停止，防止延迟的 start() 创建新 Task
         if self._task is not None:
             self._task.cancel()
             try:

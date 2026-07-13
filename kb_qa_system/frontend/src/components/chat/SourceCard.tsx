@@ -24,12 +24,46 @@ interface SourceCardProps {
 /** 内容摘要最大字符数（超出时截断） */
 const SUMMARY_MAX_LENGTH = 150;
 
+/**
+ * 根据相关度分数获取置信度级别
+ *
+ * 作用：
+ *   将 0-1 的分数映射为语义化的置信度标签和 Badge variant，
+ *   让用户直观理解分数含义，而非仅看到一个百分比数字。
+ *
+ * 分级标准（与后端 pre_generation_validator 对齐）：
+ *   - score >= 0.7       → { label: "高置信", variant: "success" }  绿色，可靠
+ *   - 0.5 <= score < 0.7 → { label: "较高",   variant: "brand" }    品牌色，可参考
+ *   - score < 0.5        → { label: "参考",   variant: "warning" }  黄色，仅供参考
+ *
+ * 说明：
+ *   后端 SIMILARITY_THRESHOLD=0.35 过滤掉低于 0.35 的结果，
+ *   所以前端不会出现 < 0.35 的分数。0.35-0.5 区间为后端 "low" 置信度
+ *   （回答前会附加"⚠️ 仅供参考"提示），前端标记为"参考"。
+ */
+function getConfidenceLevel(score: number): {
+  label: string;
+  variant: "success" | "brand" | "warning";
+} {
+  if (score >= 0.7) {
+    return { label: "高置信", variant: "success" };
+  }
+  if (score >= 0.5) {
+    return { label: "较高", variant: "brand" };
+  }
+  return { label: "参考", variant: "warning" };
+}
+
 /** SourceCard 组件 */
 export function SourceCard({ source }: SourceCardProps) {
   const [expanded, setExpanded] = useState(false);
 
   /** 相关度百分比（0-100） */
   const scorePercent = Math.round(source.score * 100);
+
+  /** 置信度级别（分段式标签，与后端 confidence 分级语义对齐） */
+  const { label: confidenceLabel, variant: confidenceVariant } =
+    getConfidenceLevel(source.score);
 
   /** 是否需要折叠（内容超过摘要长度） */
   const needCollapse = source.content.length > SUMMARY_MAX_LENGTH;
@@ -56,8 +90,8 @@ export function SourceCard({ source }: SourceCardProps) {
             {source.title}
           </span>
         </div>
-        <Badge variant="brand" className="shrink-0">
-          {scorePercent}%
+        <Badge variant={confidenceVariant} className="shrink-0">
+          {confidenceLabel} · {scorePercent}%
         </Badge>
       </div>
 

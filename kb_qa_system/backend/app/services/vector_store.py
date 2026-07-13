@@ -20,6 +20,7 @@
 """
 
 import time
+import re
 import hashlib
 import logging
 from typing import List, Dict, Any, Optional
@@ -198,17 +199,32 @@ class VectorStoreService:
 
         try:
             for chunk_data in chunks:
-                text = chunk_data["text"]
+                # 注意：局部变量命名为 chunk_text，避免遮蔽 sqlalchemy.text() 函数
+                # （此前用 text 作为变量名，导致下方 db.execute(text(...)) 报
+                #  'str' object is not callable，文档处理全部失败）
+                chunk_text = chunk_data["text"]
                 metadata = chunk_data.get("metadata", {})
 
                 # 生成向量
-                vector, model_used = self.generate_embedding(text)
+                vector, model_used = self.generate_embedding(chunk_text)
+
+                # fail-fast：向量化失败则中止整篇文档处理
+                # 作用：embedding 全部端点不可用时 generate_embedding 返回 (None, "none")，
+                #       若静默插入 content_vector=NULL 会导致"处理成功但向量检索不到"的隐蔽问题。
+                #       抛异常让 Celery 任务明确失败，error_message 透出根因便于排查。
+                if vector is None:
+                    raise RuntimeError(
+                        f"文档块向量化失败：所有 Embedding 端点不可用"
+                        f"（model_used={model_used}）。"
+                        f"请检查 OPENAI_API_KEY / EMBEDDING_FALLBACK_API_KEY 有效性，"
+                        f"或启用本地 Embedding 兜底（INSTALL_LOCAL_ML=true）。"
+                    )
 
                 # 创建块记录
                 db_chunk = DocumentChunk(
                     document_id=document_id,
                     chunk_index=metadata.get("chunk_index", success_count),
-                    content=text,
+                    content=chunk_text,
                     content_vector=vector,
                     token_count=metadata.get("token_count", 0),
                     page_number=metadata.get("page_number"),
@@ -222,13 +238,14 @@ class VectorStoreService:
 
                 # 更新全文检索列
                 # 作用：使用 to_tsvector 生成全文检索向量
+                # 注意：text() 是 sqlalchemy.text()，构造参数化 SQL（非局部变量）
                 if db_chunk.id:
                     db.execute(
                         text(
                             "UPDATE document_chunks SET content_tsv = "
                             "to_tsvector('simple', :content) WHERE id = :id"
                         ),
-                        {"content": text, "id": db_chunk.id}
+                        {"content": chunk_text, "id": db_chunk.id}
                     )
 
                 success_count += 1
@@ -291,7 +308,11 @@ class VectorStoreService:
             # D4-04 IVFFlat probes 调优：设置检索时扫描的聚类数量
             # 作用：probes 越大召回率越高但速度越慢，默认 10 适合中小规模数据
             # 注意：SET LOCAL 仅在当前事务内有效，不影响其他连接
-            db.execute(text("SET LOCAL ivfflat.probes = :probes"), {"probes": settings.IVFFLAT_PROBES})
+            # 注意：PostgreSQL SET LOCAL 不支持绑定参数（:probes），必须字面量插值
+            #       IVFFLAT_PROBES 为 int 类型配置，强制 int() 校验后插值，杜绝 SQL 注入
+            probes_value = int(settings.IVFFLAT_PROBES)
+            assert probes_value > 0, "IVFFLAT_PROBES 必须为正整数"
+            db.execute(text(f"SET LOCAL ivfflat.probes = {probes_value}"))
 
             # 使用 pgvector 的 <=> 操作符（余弦距离）
             # distance 范围 [0, 2]，0 表示完全相同
@@ -328,6 +349,7 @@ class VectorStoreService:
 
             # 相似度阈值过滤
             sql += " AND 1 - (dc.content_vector <=> :query_vector) >= :threshold"
+            params["threshold"] = settings.SIMILARITY_THRESHOLD
 
             # 排序和限制
             sql += " ORDER BY dc.content_vector <=> :query_vector LIMIT :limit"
@@ -372,16 +394,23 @@ class VectorStoreService:
         document_ids: Optional[List[int]] = None
     ) -> List[Dict[str, Any]]:
         """
-        关键词检索（全文检索）
+        关键词检索（全文检索 + 中文 ILIKE 模糊匹配）
 
         作用：
-            使用 PostgreSQL 的全文检索功能，按关键词匹配文档。
+            使用 PostgreSQL 全文检索 + ILIKE 模糊匹配，按关键词匹配文档。
             作为向量检索的补充和兜底。
 
+            【检索优化修复】原实现 query.strip().split() 对中文无效（中文无空格分词），
+            to_tsquery('simple', '辅助系统功能设计') 将整个中文字符串作为单个 token，
+            导致中文查询 0 结果。修复后采用双路匹配策略：
+            - 英文关键词：to_tsquery 精确匹配（ts_rank 计分）
+            - 中文 bigram：ILIKE 模糊匹配（匹配数量计分）
+
         实现方式：
-            1. 使用 to_tsquery 构建查询
-            2. 使用 ts_rank 计算相关度
-            3. 使用 @@ 操作符匹配
+            1. 调用 _extract_search_keywords() 提取关键词（英文单词 + 中文 2-gram）
+            2. 英文关键词用 to_tsquery + ts_rank 匹配计分
+            3. 中文 bigram 用 ILIKE OR 模糊匹配，按命中数量计分
+            4. 融合两路结果，取最高分
 
         参数：
             query: str - 用户问题
@@ -394,64 +423,134 @@ class VectorStoreService:
         if top_k is None:
             top_k = settings.SEARCH_TOP_K
 
+        # 提取关键词（核心修复：中文 2-gram 分词替代 strip().split()）
+        keywords = self._extract_search_keywords(query)
+        if not keywords:
+            return []
+
+        # 区分英文词和中文 bigram/unigram
+        english_terms = [k for k in keywords if re.match(r'^[a-z]{2,}$', k)]
+        chinese_terms = [
+            k for k in keywords
+            if re.match(r'^[\u4e00-\u9fa5]+$', k)
+        ]
+
         db: Session = SessionLocal()
         try:
-            # 构建全文检索查询
-            # 作用：将用户输入转为 tsquery 格式
-            # 简单分词：按空格分割，用 & 连接（AND 关系）
-            query_terms = query.strip().split()
-            tsquery = " & ".join(query_terms)
-
-            if not tsquery:
+            # 文档ID过滤前置检查（权限隔离，同 vector_search 语义）
+            if document_ids is not None and len(document_ids) == 0:
                 return []
 
-            sql = """
-                SELECT
-                    dc.id,
-                    dc.document_id,
-                    dc.chunk_index,
-                    dc.content,
-                    dc.page_number,
-                    dc.metadata_,
-                    d.title as document_title,
-                    ts_rank(dc.content_tsv, to_tsquery('simple', :tsquery)) as rank
-                FROM document_chunks dc
-                JOIN documents d ON dc.document_id = d.id
-                WHERE dc.content_tsv @@ to_tsquery('simple', :tsquery)
-                  AND d.is_deleted = false
-            """
+            results_map: Dict[int, Dict[str, Any]] = {}
 
-            params = {"tsquery": tsquery}
+            # 1. 英文关键词：to_tsquery 精确匹配（原逻辑，仅对英文有效）
+            # 作用：英文技术词如 asyncio、requests 仍用全文检索精确匹配
+            if english_terms:
+                tsquery = " & ".join(english_terms)
+                sql_en = """
+                    SELECT
+                        dc.id, dc.document_id, dc.chunk_index, dc.content,
+                        dc.page_number, dc.metadata_, d.title as document_title,
+                        ts_rank(to_tsvector('simple', dc.content), to_tsquery('simple', :tsquery)) as rank
+                    FROM document_chunks dc
+                    JOIN documents d ON dc.document_id = d.id
+                    WHERE to_tsvector('simple', dc.content) @@ to_tsquery('simple', :tsquery)
+                      AND d.is_deleted = false
+                """
+                params_en: Dict[str, Any] = {"tsquery": tsquery}
+                if document_ids is not None:
+                    sql_en += " AND dc.document_id = ANY(:doc_ids)"
+                    params_en["doc_ids"] = document_ids
+                sql_en += " ORDER BY rank DESC LIMIT :limit"
+                params_en["limit"] = top_k * 3
 
-            # 文档ID过滤（同 vector_search 的权限隔离语义）
-            if document_ids is not None:
-                if len(document_ids) == 0:
-                    # 空列表：无可访问文档，返回空（防止越权）
-                    return []
-                sql += " AND dc.document_id = ANY(:doc_ids)"
-                params["doc_ids"] = document_ids
+                result_en = db.execute(text(sql_en), params_en)
+                for row in result_en:
+                    score = min(float(row.rank) / 0.1, 1.0)
+                    results_map[row.id] = {
+                        "chunk_id": row.id,
+                        "content": row.content,
+                        "metadata": {
+                            "document_id": row.document_id,
+                            "document_title": row.document_title,
+                            "chunk_index": row.chunk_index,
+                            "page_number": row.page_number,
+                            **(row.metadata_ or {}),
+                        },
+                        "score": score,
+                    }
 
-            sql += " ORDER BY rank DESC LIMIT :limit"
-            params["limit"] = top_k
+            # 2. 中文 bigram/unigram：ILIKE 模糊匹配（核心修复）
+            # 作用：解决 to_tsquery 对中文不分词导致 0 结果的问题
+            # 策略：每个 bigram 用 ILIKE %term% 匹配，OR 连接，按命中数计分
+            if chinese_terms:
+                # 构建 OR 条件：任一关键词匹配即召回
+                like_clauses = []
+                like_params: Dict[str, Any] = {}
+                for idx, term in enumerate(chinese_terms):
+                    param_name = f"kw_{idx}"
+                    like_clauses.append(f"dc.content ILIKE :{param_name}")
+                    # 转义 ILIKE 通配符（防御性：中文不含 % _，但英文可能含 _）
+                    escaped = term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+                    like_params[param_name] = f"%{escaped}%"
 
-            result = db.execute(text(sql), params)
+                where_clause = " OR ".join(like_clauses)
+                total_terms = len(chinese_terms)
 
-            search_results = []
-            for row in result:
-                # 归一化 rank 到 0-1
-                score = min(float(row.rank) / 0.1, 1.0)
-                search_results.append({
-                    "chunk_id": row.id,
-                    "content": row.content,
-                    "metadata": {
-                        "document_id": row.document_id,
-                        "document_title": row.document_title,
-                        "chunk_index": row.chunk_index,
-                        "page_number": row.page_number,
-                        **(row.metadata_ or {}),
-                    },
-                    "score": score,
-                })
+                # 构建匹配计数表达式：统计每个 chunk 命中的关键词数量
+                # 作用：按命中数量排序，命中越多越相关
+                case_parts = [
+                    f"(CASE WHEN dc.content ILIKE :kw_{idx} THEN 1 ELSE 0 END)"
+                    for idx in range(total_terms)
+                ]
+                match_count_expr = " + ".join(case_parts)
+
+                sql_cn = f"""
+                    SELECT
+                        dc.id, dc.document_id, dc.chunk_index, dc.content,
+                        dc.page_number, dc.metadata_, d.title as document_title,
+                        ({match_count_expr}) as match_count
+                    FROM document_chunks dc
+                    JOIN documents d ON dc.document_id = d.id
+                    WHERE ({where_clause})
+                      AND d.is_deleted = false
+                """
+                params_cn = dict(like_params)
+                if document_ids is not None:
+                    sql_cn += " AND dc.document_id = ANY(:doc_ids)"
+                    params_cn["doc_ids"] = document_ids
+                sql_cn += " ORDER BY match_count DESC LIMIT :limit"
+                params_cn["limit"] = top_k * 3
+
+                result_cn = db.execute(text(sql_cn), params_cn)
+                for row in result_cn:
+                    # 得分 = 命中关键词数 / 总关键词数（归一化 0-1）
+                    # 作用：归一化便于与向量检索分数融合
+                    score = float(row.match_count) / total_terms
+                    if row.id in results_map:
+                        # 英文和中文都命中：取最高分
+                        existing = results_map[row.id]
+                        existing["score"] = max(existing["score"], score)
+                    else:
+                        results_map[row.id] = {
+                            "chunk_id": row.id,
+                            "content": row.content,
+                            "metadata": {
+                                "document_id": row.document_id,
+                                "document_title": row.document_title,
+                                "chunk_index": row.chunk_index,
+                                "page_number": row.page_number,
+                                **(row.metadata_ or {}),
+                            },
+                            "score": score,
+                        }
+
+            # 排序并取 top_k
+            search_results = sorted(
+                results_map.values(),
+                key=lambda x: x["score"],
+                reverse=True
+            )[:top_k]
 
             return search_results
 
@@ -460,6 +559,65 @@ class VectorStoreService:
             return []
         finally:
             db.close()
+
+    def _extract_search_keywords(self, query: str) -> List[str]:
+        """
+        从查询中提取关键词（用于关键词检索）
+
+        作用：
+            对中文查询进行 2-gram 滑窗分词，对英文查询提取单词。
+            解决原 query.strip().split() 对中文无效的问题。
+            借鉴 intent_service._extract_keywords 的分词策略。
+
+        实现方式：
+            1. 提取英文单词（连续字母，长度≥2，转小写）
+            2. 提取中文段，按 2 字滑窗切分 bigram
+            3. 短中文段（单字）直接保留
+            4. 去重
+
+        参数：
+            query: str - 用户查询
+
+        返回：
+            List[str] - 关键词列表（英文小写 + 中文 bigram/unigram）
+
+        示例：
+            _extract_search_keywords("辅助系统功能设计")
+            → ["辅助", "助系", "系统", "统功", "功能", "能设", "设计"]
+            _extract_search_keywords("如何使用 asyncio.gather")
+            → ["如何", "何使", "使用", "asyncio", "gather"]
+        """
+        if not query:
+            return []
+
+        keywords: List[str] = []
+        seen: set = set()
+
+        # 英文单词（连续字母，长度≥2）
+        # 作用：英文技术词如 python、asyncio 是重要关键词
+        for word in re.findall(r'[a-zA-Z]{2,}', query):
+            w = word.lower()
+            if w not in seen:
+                seen.add(w)
+                keywords.append(w)
+
+        # 中文 2-gram bigram
+        # 作用：中文最小语义单元通常是 2 字词，滑窗能覆盖大部分情况
+        for segment in re.findall(r'[\u4e00-\u9fa5]+', query):
+            if len(segment) == 1:
+                # 单字直接保留（短查询场景）
+                if segment not in seen:
+                    seen.add(segment)
+                    keywords.append(segment)
+            else:
+                # 2 字滑窗切分
+                for i in range(len(segment) - 1):
+                    bigram = segment[i:i + 2]
+                    if bigram not in seen:
+                        seen.add(bigram)
+                        keywords.append(bigram)
+
+        return keywords
 
     # ============================================
     # 混合检索
@@ -470,7 +628,8 @@ class VectorStoreService:
         query: str,
         top_k: Optional[int] = None,
         document_ids: Optional[List[int]] = None,
-        enable_hybrid: Optional[bool] = None
+        enable_hybrid: Optional[bool] = None,
+        keyword_weight: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
         混合检索（向量 + 关键词）
@@ -493,6 +652,10 @@ class VectorStoreService:
             top_k: Optional[int] - 返回数量
             document_ids: Optional[List[int]] - 限定检索的文档ID列表
             enable_hybrid: Optional[bool] - 是否启用混合检索
+            keyword_weight: Optional[float] - 关键词检索权重（0-1）
+                任务2：由调用方（rag_chain）根据查询子类型动态传入，
+                None 时回退到 settings.KEYWORD_SEARCH_WEIGHT（默认 0.3）
+                精确匹配型问题传 0.6，语义型问题传 0.2，混合型传 0.3
 
         返回：
             List[Dict[str, Any]] - 检索结果
@@ -542,8 +705,13 @@ class VectorStoreService:
         # 融合结果
         # 作用：按 chunk_id 合并，加权计算分数
         merged: Dict[int, Dict[str, Any]] = {}
-        vector_weight = 1 - settings.KEYWORD_SEARCH_WEIGHT
-        keyword_weight = settings.KEYWORD_SEARCH_WEIGHT
+        # 任务2：动态混合检索权重
+        # 作用：keyword_weight 由调用方（rag_chain）根据查询子类型动态传入，
+        #       未传入（None）时回退到默认配置 KEYWORD_SEARCH_WEIGHT
+        # 子类型映射：exact_match=0.6 / semantic=0.2 / hybrid=0.3
+        if keyword_weight is None:
+            keyword_weight = settings.KEYWORD_SEARCH_WEIGHT
+        vector_weight = 1 - keyword_weight
 
         for result in vector_results:
             chunk_id = result["chunk_id"]

@@ -48,20 +48,17 @@ bcrypt==4.0.1  # E4-02: 固定 bcrypt 4.0.1，避免 4.1+ 与 passlib 1.7.4 的 
 # ============================================
 # 文档处理 - 基础
 # ============================================
-pypdf==5.0.1
 python-docx==1.1.2
 beautifulsoup4==4.12.3
 requests==2.32.3
 markdown==3.7
 
 # ============================================
-# 文档处理 - 版面分析与表格（新增）
+# 文档处理 - 版面分析与表格
 # ============================================
 PyMuPDF==1.24.10          # PDF 版面分析、图片提取
 pdfplumber==0.11.4        # 表格结构化提取
-camelot-py==0.11.0    # 复杂表格提取（备用）
 Pillow==10.4.0            # 图像处理
-opencv-python-headless==4.10.0.84  # 图像预处理
 
 # ============================================
 # OCR（扫描件支持）
@@ -74,10 +71,11 @@ pytesseract==0.3.13       # Tesseract OCR 封装
 # ============================================
 langchain==0.3.4
 langchain-openai==0.2.3
-langchain-community==0.3.3
 langchain-text-splitters==0.3.0
 openai==1.52.0
-sentence-transformers==3.1.1  # 本地 Embedding 兜底模型
+# 注：sentence-transformers 和 langchain-community 已移至 requirements-local-ml.txt
+# 本地 Embedding 兜底和 CrossEncoder 重排序为可选功能，未安装时自动降级
+# 安装方法：pip install -r requirements-local-ml.txt
 
 # ============================================
 # 工具库
@@ -88,7 +86,6 @@ tenacity==9.0.0           # 重试机制
 httpx==0.27.2             # 异步 HTTP 客户端
 numpy==1.26.4             # 向量计算
 tiktoken==0.7.0           # Token 计数
-python-magic==0.4.27      # 文件类型检测（magic number）
 
 # ============================================
 # 邮件发送（Resend SMTP）
@@ -106,4 +103,5 @@ PyYAML==6.0.2             # 模型服务配置文件解析（providers.yaml）
 # ============================================
 # 部署
 # ============================================
-gunicorn==23.0.0          # 生产 WSGI/ASGI 服务器
+# 注：gunicorn 已移除（entrypoint.sh 直接使用 uvicorn，未引用 gunicorn）
+# uvicorn[standard] 已在 Web 框架部分安装，支持生产级 ASGI 服务

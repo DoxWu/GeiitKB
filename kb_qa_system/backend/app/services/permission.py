@@ -74,26 +74,29 @@ class PermissionService:
         db: Session,
         user_id: int,
         include_deleted: bool = False,
+        user_type: str = "regular",
     ) -> List[int]:
         """
         获取用户可访问的文档 ID 列表（用于检索范围限定）
 
         作用：
-            返回用户有权检索的全部文档 ID，包括：
-            1. 该用户上传的所有文档（个人文档库，无论 private/public）
-            2. 所有 visibility=public 的文档（公共文档库）
+            返回用户有权检索的全部文档 ID。
+            - regular 用户：该用户上传的所有文档（个人文档库） + 所有公共文档
+            - guest 用户（任务5）：仅所有公共文档（visibility=public），不可访问任何私人文档
             3. 自动排除已软删除的文档
 
             这是检索隔离的核心：检索时传入此列表作为 document_ids 过滤，
             确保不会检索到其他用户的私有文档。
 
         实现方式：
-            单条 SQL 查询：visibility=public OR user_id=:uid，并过滤 is_deleted
+            - regular：单条 SQL 查询 visibility=public OR user_id=:uid
+            - guest：单条 SQL 查询 visibility=public（最小权限）
 
         参数：
             db: Session - 数据库会话
             user_id: int - 当前用户 ID（来自 JWT Token，不可篡改）
             include_deleted: bool - 是否包含已软删除文档（默认 False，检索时不包含）
+            user_type: str - 用户类型（regular/guest，任务5），guest 仅可访问公共库
 
         返回：
             List[int] - 可访问的文档 ID 列表
@@ -103,13 +106,17 @@ class PermissionService:
             doc_ids = permission_service.get_accessible_document_ids(db, user.id)
             results = vector_store.search(query, document_ids=doc_ids)
         """
-        query = db.query(Document.id).filter(
-            # 个人文档（自己上传的） OR 公共文档
-            (Document.user_id == user_id) | (Document.visibility == VISIBILITY_PUBLIC)
-        )
+        query = db.query(Document.id).filter(Document.is_deleted == False) if not include_deleted else db.query(Document.id)
 
-        if not include_deleted:
-            query = query.filter(Document.is_deleted == False)
+        # 任务5：guest 用户仅可访问公共文档库（最小权限原则）
+        # 作用：临时用户无个人文档库，仅可检索公共知识库内容
+        if user_type == "guest":
+            query = query.filter(Document.visibility == VISIBILITY_PUBLIC)
+        else:
+            # 正式用户：个人文档（自己上传的） OR 公共文档
+            query = query.filter(
+                (Document.user_id == user_id) | (Document.visibility == VISIBILITY_PUBLIC)
+            )
 
         # 只取已处理完成的文档参与检索（pending/failed 的文档无分块）
         # 作用：避免检索到尚未向量化的文档

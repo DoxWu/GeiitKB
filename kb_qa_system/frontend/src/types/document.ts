@@ -41,6 +41,8 @@ export interface DocumentResponse {
   status: DocumentStatus;
   /** 可见性：private 个人文档库 / public 公共文档库 */
   visibility: DocumentVisibility;
+  /** 所属文档库分支ID（null 表示未分类） */
+  folder_id: number | null;
   /** 当前处理步骤描述 */
   processing_step: string | null;
   /** 处理进度（0-100） */
@@ -75,8 +77,8 @@ export interface DocumentListResponse {
   page_size: number;
 }
 
-/** 文档范围筛选 */
-export type DocumentScope = "private" | "public" | "all";
+/** 文档范围筛选（对齐后端 scope 参数） */
+export type DocumentScope = "accessible" | "mine" | "public";
 
 /** 文档列表查询参数 */
 export interface DocumentQueryParams {

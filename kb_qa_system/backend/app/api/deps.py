@@ -205,3 +205,49 @@ def get_current_superuser(
             detail={"error": {"code": "PERMISSION_DENIED", "message": "权限不足"}}
         )
     return current_user
+
+
+# ============================================
+# 获取当前正式用户（非临时用户）- 任务5
+# ============================================
+
+def get_current_regular_user(
+    current_user: User = Depends(get_current_active_user)
+) -> User:
+    """
+    获取当前正式用户（非临时用户）
+
+    作用：
+        在 get_current_active_user 基础上，拒绝临时用户（user_type='guest'）访问。
+        用于保护文档上传、URL 导入等临时用户无权使用的接口。
+
+    实现方式：
+        读取 current_user.user_type 字段，为 'guest' 时返回 403。
+        使用 getattr 兜底默认值 'regular'，兼容未迁移的旧数据。
+
+    使用方式：
+        @router.post("/upload")
+        async def upload(
+            current_user: User = Depends(get_current_regular_user)
+        ): ...
+
+    参数：
+        current_user: User - 当前活跃用户（由 get_current_active_user 提供）
+
+    返回：
+        User - 当前正式用户
+
+    异常：
+        403: 临时用户无权访问
+    """
+    if getattr(current_user, "user_type", "regular") == "guest":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": {
+                    "code": "GUEST_FORBIDDEN",
+                    "message": "临时用户无权使用此功能，请注册正式账号",
+                }
+            },
+        )
+    return current_user

@@ -23,6 +23,7 @@ export const USER_STORAGE_KEY = "kb_auth_user";
 export const API_PATHS = {
   // 认证相关
   LOGIN: "/auth/login",
+  GUEST_LOGIN: "/auth/guest-login",
   REGISTER: "/auth/register",
   REFRESH: "/auth/refresh",
   LOGOUT: "/auth/logout",
@@ -41,6 +42,8 @@ export const API_PATHS = {
   DOCUMENT_UPLOAD: "/documents/upload",
   DOCUMENT_URL: "/documents/import-url",
   DOCUMENT_REPROCESS: (id: number) => `/documents/${id}/reprocess`,
+  // 修复 Issue 6：移动文档到其他分支
+  DOCUMENT_MOVE: (id: number) => `/documents/${id}/move`,
   DOCUMENT_DETAIL: (id: number) => `/documents/${id}`,
   DOCUMENT_TASK_STATUS: (documentId: number) =>
     `/documents/${documentId}/task-status`,

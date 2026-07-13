@@ -243,21 +243,45 @@ class Settings(BaseSettings):
     # 检索总超时时间（秒），超时后返回已有结果或空
     RETRIEVAL_TIMEOUT: int = 10
 
+    # 优化3：模型健康检查启动模式
+    # 作用：控制 lifespan 中 start_health_checks() 是否阻塞应用就绪
+    # False（默认）：非阻塞，健康检查作为后台 Task 启动，应用立即就绪接受请求
+    #   场景：生产环境冷启动优先（Railway 部署、扩容时快速就绪）
+    # True：阻塞，等待首轮健康探测完成再标记应用就绪
+    #   场景：调试健康检查行为、要求首批请求前熔断器状态已更新
+    # 注意：即使 False，manager 内部 _ensure_initialized() 懒加载兜底仍生效，
+    #       首次真实调用时按需初始化
+    MODEL_EAGER_HEALTH_CHECK: bool = False
+
     # ============================================
     # 向量检索配置（pgvector）
     # ============================================
 
     # 检索时返回的相似文档数量（Top-K）
-    SEARCH_TOP_K: int = 4
+    # 任务3：从 4 提升至 6，直接增加最终返回数量，提升检索覆盖率
+    SEARCH_TOP_K: int = 6
 
     # 相似度阈值，低于此值的文档不会被采用（0-1，越大越严格）
-    SIMILARITY_THRESHOLD: float = 0.5
+    # 任务3：从 0.5 降至 0.35，避免相关文档因阈值过高被过滤掉
+    SIMILARITY_THRESHOLD: float = 0.35
 
     # 是否启用混合检索（向量 + 关键词）
     ENABLE_HYBRID_SEARCH: bool = True
 
     # 混合检索中关键词检索的权重（0-1）
     KEYWORD_SEARCH_WEIGHT: float = 0.3
+
+    # 查询子类型 → 关键词权重映射（任务2：动态混合检索权重）
+    # 作用：根据 intent_classifier._detect_query_sub_type 返回的子类型，
+    #       动态调整关键词检索权重，替代静态的 KEYWORD_SEARCH_WEIGHT
+    # - exact_match: 关键词权重 0.6（精确匹配场景，如"asyncio.gather"关键词命中更重要）
+    # - semantic: 关键词权重 0.2（语义型问题，如"如何实现异步"向量检索更重要）
+    # - hybrid: 关键词权重 0.3（默认，与原 KEYWORD_SEARCH_WEIGHT 一致）
+    QUERY_SUBTYPE_WEIGHTS: dict = {
+        "exact_match": 0.6,
+        "semantic": 0.2,
+        "hybrid": 0.3,
+    }
 
     # ============================================
     # Reranking 重排序配置（Cross-Encoder）
@@ -278,7 +302,8 @@ class Settings(BaseSettings):
     # 重排序候选倍数
     # 作用：实际检索数量 = SEARCH_TOP_K × 此倍数，重排序后取 SEARCH_TOP_K
     # 倍数越大召回越多（减少漏召），但重排序耗时越长
-    RERANKER_CANDIDATE_MULTIPLIER: int = 3
+    # 任务3：从 3 提升至 5，扩大重排序候选池（6×5=30 候选），减少漏召
+    RERANKER_CANDIDATE_MULTIPLIER: int = 5
 
     # ============================================
     # Query 改写配置（指代消解 + 语义扩展）
@@ -352,11 +377,21 @@ class Settings(BaseSettings):
     # 作用：UrlParser.parse 流式下载时累计字节数，超过此限制立即中止
     URL_IMPORT_MAX_SIZE: int = 50 * 1024 * 1024
 
+    # 网页图片提取配置（任务3）
+    # 作用：网页导入时提取 <img> 图片，过滤小图片避免噪声
+    # 设计权衡：OCR/Vision 调用较慢，限制图片数量和大小避免拖慢导入
+    URL_IMAGE_MIN_SIZE: int = 50 * 50          # 最小图片尺寸（像素面积），小于则跳过
+    URL_IMAGE_MAX_COUNT: int = 20              # 最多提取图片数量，避免过多图片拖慢导入
+    URL_IMAGE_DOWNLOAD_TIMEOUT: int = 10       # 单张图片下载超时（秒）
+    URL_IMAGE_MAX_SIZE: int = 5 * 1024 * 1024  # 单张图片最大 5MB，避免下载超大图
+
     # 文档分块大小（字符数）
-    CHUNK_SIZE: int = 500
+    # 任务3：从 500 提升至 800，单块包含更多上下文，更完整保留段落语义
+    CHUNK_SIZE: int = 800
 
     # 分块重叠大小（字符数）
-    CHUNK_OVERLAP: int = 50
+    # 任务3：从 50 提升至 100，增大重叠避免语义在分块边界被切断
+    CHUNK_OVERLAP: int = 100
 
     # 文档质量分阈值，低于此值标记为低质量
     DOCUMENT_QUALITY_THRESHOLD: float = 60.0
@@ -525,7 +560,33 @@ class Settings(BaseSettings):
     # IVFFlat probes 参数：控制检索时扫描的聚类数量
     # 作用：probes 越大召回率越高但速度越慢，默认 10 适合中小规模数据
     # 调优建议：数据量 > 100万行时增大到 20-50，同时需重建索引调整 lists 参数
-    IVFFLAT_PROBES: int = 10
+    # 任务（检索优化）：10→50，提升中文向量检索召回率，缓解相似度偏低问题
+    IVFFLAT_PROBES: int = 50
+
+    # ============================================
+    # 时区配置（任务6）
+    # ============================================
+
+    # 应用时区，用于日志时间戳和展示层时间格式化
+    # 作用：容器内 TZ 环境变量已设为 Asia/Shanghai，此配置项供应用层读取时区名称
+    #       生产环境（Railway）通过环境变量 TZ=Asia/Shanghai 注入
+    APP_TIMEZONE: str = "Asia/Shanghai"
+
+    # ============================================
+    # 临时用户配置（任务5）
+    # ============================================
+
+    # 临时用户最大提问次数
+    # 作用：guest 用户最多提问 20 次，防止滥用 LLM 资源
+    GUEST_QUESTION_LIMIT: int = 20
+
+    # 临时用户提问计数 TTL（秒，默认 24 小时）
+    # 作用：24 小时后计数过期，guest 用户可重新提问
+    GUEST_QUESTION_COUNT_TTL: int = 86400
+
+    # 临时用户名前缀
+    # 作用：guest 用户名格式为 guest_<随机 hex>，便于识别和统计
+    GUEST_USERNAME_PREFIX: str = "guest_"
 
     # ============================================
     # pydantic-settings 配置

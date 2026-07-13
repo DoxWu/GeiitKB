@@ -92,3 +92,31 @@ export function getStatusLabel(status: string): string {
   };
   return labels[status] ?? status;
 }
+
+/**
+ * 获取文档处理步骤的中文显示文案
+ *
+ * 作用：把后端的 processing_step（如 parsing/cleaning/chunking）转为中文显示，
+ *   供进度条上方的步骤描述使用。
+ *
+ * @param step - 处理步骤标识
+ * @returns 中文步骤文案
+ */
+export function getProcessingStepLabel(step: string | null | undefined): string {
+  if (!step) return "处理中...";
+  const labels: Record<string, string> = {
+    uploaded: "已上传，等待处理",
+    parsing: "正在解析文档",
+    layout_analysis: "正在版面分析",
+    cleaning: "正在清洗文本",
+    table_extraction: "正在提取表格",
+    ocr: "正在识别图片",
+    chunking: "正在分块",
+    embedding: "正在向量化",
+    quality_scoring: "正在质量评分",
+    completed: "处理完成",
+    failed: "处理失败",
+    queued: "排队中",
+  };
+  return labels[step] ?? step;
+}

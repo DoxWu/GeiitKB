@@ -235,7 +235,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }));
           },
           onError: (message) => {
-            set({ error: message });
+            // 修复：LLM 流式错误时，追加一条 fallback 智能体消息气泡
+            // 作用：此前只设置 error 状态（顶部提示条），不产生消息气泡，
+            //       导致用户只能看见自己的提问，看不见智能体任何反馈。
+            //       修复后：以"降级回复"形式追加 assistant 消息，明确告知失败原因。
+            const errorMessage: ChatMessage = {
+              id: Date.now() + 1,
+              role: "assistant",
+              content: "",
+              created_at: new Date().toISOString(),
+              is_degraded: true,
+              degrade_reason: `智能体响应失败：${message}`,
+            };
+            set((s) => ({
+              messages: [...s.messages, errorMessage],
+              error: message,
+              streamingContent: "",
+              streamingSources: [],
+            }));
           },
         },
         streamingController.signal,
@@ -276,9 +293,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }));
         }
       } else {
-        set({
-          error: err instanceof Error ? err.message : "发送消息失败，请重试",
-        });
+        // 修复：非取消错误时，追加 fallback 智能体消息气泡
+        // 作用：此前只设置 error 状态，不产生消息气泡，用户看不见智能体反馈。
+        //       修复后：以"降级回复"形式追加 assistant 消息，告知失败原因。
+        const errMsg = err instanceof Error ? err.message : "发送消息失败，请重试";
+        // 若已累积部分流式内容，保存为降级回复（保留已生成内容）
+        const partialContent = get().streamingContent;
+        const errorMessage: ChatMessage = {
+          id: Date.now() + 1,
+          role: "assistant",
+          content: partialContent,
+          sources: get().streamingSources,
+          created_at: new Date().toISOString(),
+          is_degraded: true,
+          degrade_reason: partialContent.trim()
+            ? `响应中断：${errMsg}（已保留部分内容）`
+            : `响应失败：${errMsg}`,
+        };
+        set((s) => ({
+          messages: [...s.messages, errorMessage],
+          error: errMsg,
+          streamingContent: "",
+          streamingSources: [],
+        }));
       }
     } finally {
       set({ streaming: false, streamingContent: "", streamingSources: [] });

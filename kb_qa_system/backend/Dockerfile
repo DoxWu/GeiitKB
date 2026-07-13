@@ -47,10 +47,21 @@ WORKDIR /app
 # 先单独复制依赖文件
 # 作用：利用 Docker 层缓存，代码变更不会重新安装依赖
 COPY requirements.txt .
+COPY requirements-local-ml.txt .
+
+# 可选：本地 ML 依赖开关
+# 作用：默认不安装 sentence-transformers（节省 ~800MB torch），
+#       需要本地 Embedding 兜底 / CrossEncoder 重排序时启用。
+# 启用方式：docker build --build-arg INSTALL_LOCAL_ML=true -t kb-qa-backend .
+ARG INSTALL_LOCAL_ML=false
 
 # 升级 pip 并安装依赖到虚拟环境
+# 核心依赖始终安装；本地 ML 依赖按 INSTALL_LOCAL_ML 开关条件安装
 RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+    pip install -r requirements.txt && \
+    if [ "${INSTALL_LOCAL_ML}" = "true" ]; then \
+        pip install -r requirements-local-ml.txt; \
+    fi
 
 
 # --------------------------------------------
@@ -63,31 +74,33 @@ LABEL description="GeiIt企业知识库后端（FastAPI + Celery）"
 
 # 运行时环境变量
 # PATH 包含 venv，使 uvicorn/celery/alembic 命令直接可用
+# 任务6：新增 TZ=Asia/Shanghai，使容器内时间与北京时间一致
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     PATH="/opt/venv/bin:$PATH" \
-    ROLE=api
+    ROLE=api \
+    TZ=Asia/Shanghai
 
 # 安装运行时系统依赖
 # 作用：
 #   - libpq5: psycopg 运行时库
-#   - libmagic1: python-magic 文件类型检测
 #   - tesseract-ocr + chi-sim + eng: OCR 中英文识别
-#   - libglib2.0-0/libsm6/libxrender1/libxext6/libgl1: opencv/Pillow 运行时
+#   - libglib2.0-0: Pillow 运行时依赖
 #   - curl: 健康检查
+#   - tzdata: 时区数据（任务6），使 TZ 环境变量生效
+# 轻量化优化：移除了 libmagic1（python-magic 已从依赖中删除）、
+#             libsm6/libxrender1/libxext6/libgl1（opencv 已从依赖中删除）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
-    libmagic1 \
     tesseract-ocr \
     tesseract-ocr-chi-sim \
     tesseract-ocr-eng \
     libglib2.0-0 \
-    libsm6 \
-    libxrender1 \
-    libxext6 \
-    libgl1 \
     curl \
+    tzdata \
+    && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
 # 创建非 root 用户（在 COPY 之前，以便使用 --chown 直接设置属主）
@@ -104,10 +117,16 @@ WORKDIR /app
 # 作用：源码独立放在 /app，docker-compose 开发挂载 ./backend:/app 不影响 /opt/venv
 COPY --chown=kbapp:kbapp . /app/
 
-# 赋予入口脚本执行权限
+# 赋予入口脚本执行权限 + 创建上传目录
 # 注意：Windows 宿主 COPY 不保留执行位，需显式 chmod
-# 此 RUN 仅修改 entrypoint.sh 的权限位，不涉及 /opt/venv 的大规模 chown
-RUN chmod +x /app/entrypoint.sh
+# uploads 目录权限修复：
+#   - .dockerignore 排除了 uploads/，镜像中默认无此目录
+#   - docker-compose 用命名卷挂载 /app/uploads，若镜像中无此目录，
+#     Docker 会创建 root:root 755 空目录，导致非 root 用户 kbapp 无法写入（HTTP 500）
+#   - 显式创建并 chown 给 kbapp，命名卷首次挂载时继承此权限
+RUN chmod +x /app/entrypoint.sh && \
+    mkdir -p /app/uploads && \
+    chown -R kbapp:kbapp /app/uploads
 USER kbapp
 
 # 暴露端口：FastAPI 8000，Flower 5555

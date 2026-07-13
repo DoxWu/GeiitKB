@@ -27,13 +27,14 @@ interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
 }
 
 /** 变体样式映射 */
+// 修复 Issue 4：所有变体使用 dark: 前缀兼容暗色模式，避免 bg-red-50 等固定亮色在暗色模式下刺眼
 const variantStyles: Record<BadgeVariant, string> = {
-  default: "bg-muted text-ink-secondary",
-  success: "bg-green-50 text-success",
-  warning: "bg-amber-50 text-warning",
-  danger: "bg-red-50 text-danger",
-  brand: "bg-brand-light text-brand",
-  info: "bg-blue-50 text-blue-600",
+  default: "bg-muted text-ink-secondary dark:bg-muted",
+  success: "bg-success/10 text-success dark:bg-success/20",
+  warning: "bg-warning/10 text-warning dark:bg-warning/20",
+  danger: "bg-danger/10 text-danger dark:bg-danger/20",
+  brand: "bg-brand-light text-brand dark:bg-brand/20 dark:text-brand",
+  info: "bg-blue-50 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400",
 };
 
 /** Badge 组件 */

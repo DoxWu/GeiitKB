@@ -2,14 +2,13 @@
  * Sidebar 组件集成测试
  *
  * 覆盖范围：
- *   - 渲染：品牌标题、文档库标题、全部文档按钮、分支列表、用户信息
- *   - 全部文档按钮：调用 selectFolder(null)
+ *   - 渲染：品牌标题、文档库范围标题、我的分支标题、全部文档按钮、分支列表、用户信息
+ *   - 文档库范围切换：全部文档/公共文档库/个人文档库 调用 selectScope
  *   - 分支列表：渲染 FolderItem、点击调用 selectFolder
  *   - 加载中状态：显示"加载中..."
  *   - 空分支列表：显示"暂无分支"
  *   - 新建分支按钮：打开 CreateFolderModal
  *   - 登出按钮：调用 logout + toast
- *   - 折叠状态：collapsed 样式
  *   - 折叠回调：onCollapse 调用
  *
  * Mock 策略：mock @/store/documentStore、@/store/authStore、@/store/toastStore、FolderItem、CreateFolderModal
@@ -25,7 +24,9 @@ const { mockDocStore } = vi.hoisted(() => ({
   mockDocStore: {
     folders: [] as DocumentFolder[],
     currentFolderId: null as number | null,
+    currentScope: "accessible" as string,
     selectFolder: vi.fn(),
+    selectScope: vi.fn(),
     foldersLoading: false,
   },
 }));
@@ -103,6 +104,7 @@ describe("Sidebar 组件", () => {
     vi.clearAllMocks();
     mockDocStore.folders = [];
     mockDocStore.currentFolderId = null;
+    mockDocStore.currentScope = "accessible";
     mockDocStore.foldersLoading = false;
   });
 
@@ -111,9 +113,14 @@ describe("Sidebar 组件", () => {
     expect(screen.getByText("GeiIt企业知识库")).toBeInTheDocument();
   });
 
-  it("渲染文档库标题", () => {
+  it("渲染文档库范围标题", () => {
     renderWithRouter(<Sidebar />);
-    expect(screen.getByText("文档库")).toBeInTheDocument();
+    expect(screen.getByText("文档库范围")).toBeInTheDocument();
+  });
+
+  it("渲染我的分支标题", () => {
+    renderWithRouter(<Sidebar />);
+    expect(screen.getByText("我的分支")).toBeInTheDocument();
   });
 
   it("渲染全部文档按钮", () => {
@@ -121,11 +128,35 @@ describe("Sidebar 组件", () => {
     expect(screen.getByText("全部文档")).toBeInTheDocument();
   });
 
-  it("点击全部文档调用 selectFolder(null)", async () => {
+  it("渲染公共文档库按钮", () => {
+    renderWithRouter(<Sidebar />);
+    expect(screen.getByText("公共文档库")).toBeInTheDocument();
+  });
+
+  it("渲染个人文档库按钮", () => {
+    renderWithRouter(<Sidebar />);
+    expect(screen.getByText("个人文档库")).toBeInTheDocument();
+  });
+
+  it("点击全部文档调用 selectScope('accessible')", async () => {
     const user = userEvent.setup();
     renderWithRouter(<Sidebar />);
     await user.click(screen.getByText("全部文档"));
-    expect(mockDocStore.selectFolder).toHaveBeenCalledWith(null);
+    expect(mockDocStore.selectScope).toHaveBeenCalledWith("accessible");
+  });
+
+  it("点击公共文档库调用 selectScope('public')", async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<Sidebar />);
+    await user.click(screen.getByText("公共文档库"));
+    expect(mockDocStore.selectScope).toHaveBeenCalledWith("public");
+  });
+
+  it("点击个人文档库调用 selectScope('mine')", async () => {
+    const user = userEvent.setup();
+    renderWithRouter(<Sidebar />);
+    await user.click(screen.getByText("个人文档库"));
+    expect(mockDocStore.selectScope).toHaveBeenCalledWith("mine");
   });
 
   it("渲染分支列表", () => {
@@ -203,18 +234,34 @@ describe("Sidebar 组件", () => {
     expect(mockToastStore.info).toHaveBeenCalledWith("已退出登录");
   });
 
-  it("currentFolderId 为 null 时全部文档高亮", () => {
+  it("currentScope 为 accessible 且 currentFolderId 为 null 时全部文档高亮", () => {
+    mockDocStore.currentScope = "accessible";
     mockDocStore.currentFolderId = null;
-    const { container } = renderWithRouter(<Sidebar />);
+    renderWithRouter(<Sidebar />);
     const allDocsBtn = screen.getByText("全部文档").closest("button");
     expect(allDocsBtn?.className).toContain("bg-brand-light");
   });
 
-  it("currentFolderId 不为 null 时全部文档不高亮", () => {
+  it("currentScope 为 accessible 但 currentFolderId 不为 null 时全部文档不高亮", () => {
+    mockDocStore.currentScope = "accessible";
     mockDocStore.currentFolderId = 1;
     renderWithRouter(<Sidebar />);
     const allDocsBtn = screen.getByText("全部文档").closest("button");
     expect(allDocsBtn?.className).not.toContain("bg-brand-light");
+  });
+
+  it("currentScope 为 public 时公共文档库高亮", () => {
+    mockDocStore.currentScope = "public";
+    renderWithRouter(<Sidebar />);
+    const publicBtn = screen.getByText("公共文档库").closest("button");
+    expect(publicBtn?.className).toContain("bg-blue-50");
+  });
+
+  it("currentScope 为 mine 时个人文档库高亮", () => {
+    mockDocStore.currentScope = "mine";
+    renderWithRouter(<Sidebar />);
+    const mineBtn = screen.getByText("个人文档库").closest("button");
+    expect(mineBtn?.className).toContain("bg-brand-light");
   });
 
   it("传入 onCollapse 时渲染折叠按钮", () => {
@@ -235,10 +282,11 @@ describe("Sidebar 组件", () => {
     expect(onCollapse).toHaveBeenCalledTimes(1);
   });
 
-  it("collapsed=true 时应用折叠样式", () => {
-    const { container } = renderWithRouter(<Sidebar collapsed={true} />);
+  it("aside 始终保持固定宽度 w-60（不再受 collapsed 控制）", () => {
+    const { container } = renderWithRouter(<Sidebar />);
     const aside = container.querySelector("aside");
-    expect(aside?.className).toContain("w-0");
-    expect(aside?.className).toContain("-translate-x-full");
+    expect(aside?.className).toContain("w-60");
+    expect(aside?.className).not.toContain("w-0");
+    expect(aside?.className).not.toContain("-translate-x-full");
   });
 });

@@ -12,28 +12,44 @@
  *   - /                  → 重定向至 /documents
  *   - *                  → 404 页面
  *
+ * 性能优化：
+ *   除 LoginPage 和 NotFoundPage（首屏 critical）外，所有页面使用 React.lazy 懒加载，
+ *   减小首屏 bundle 体积，页面按需加载。
+ *
  * 使用方式：
  *   由 main.tsx 渲染
  */
 
+import { lazy, Suspense } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
-import { ToastContainer, ErrorBoundary, OfflineIndicator } from "@/components/common";
+import { ToastContainer, ErrorBoundary, OfflineIndicator, Spinner } from "@/components/common";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { PublicRoute } from "@/components/auth/PublicRoute";
 import { AdminRoute } from "@/components/auth/AdminRoute";
+// 静态导入：首屏 critical path（登录页 + 404 页，体积小且需立即可用）
 import LoginPage from "@/pages/LoginPage";
-import RegisterApplyPage from "@/pages/RegisterApplyPage";
-import SetPasswordPage from "@/pages/SetPasswordPage";
-import DocumentsPage from "@/pages/DocumentsPage";
-import ChatPage from "@/pages/ChatPage";
-import SettingsPage from "@/pages/SettingsPage";
-import AdminApplicationsPage from "@/pages/AdminApplicationsPage";
-import PrivacyPage from "@/pages/PrivacyPage";
-import TermsPage from "@/pages/TermsPage";
-import HelpPage from "@/pages/HelpPage";
 import NotFoundPage from "@/pages/NotFoundPage";
+// 懒加载：按路由按需加载，减小首屏 bundle
+const RegisterApplyPage = lazy(() => import("@/pages/RegisterApplyPage"));
+const SetPasswordPage = lazy(() => import("@/pages/SetPasswordPage"));
+const DocumentsPage = lazy(() => import("@/pages/DocumentsPage"));
+const ChatPage = lazy(() => import("@/pages/ChatPage"));
+const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
+const AdminApplicationsPage = lazy(() => import("@/pages/AdminApplicationsPage"));
+const PrivacyPage = lazy(() => import("@/pages/PrivacyPage"));
+const TermsPage = lazy(() => import("@/pages/TermsPage"));
+const HelpPage = lazy(() => import("@/pages/HelpPage"));
 import { useAuthStore } from "@/store/authStore";
 import { useNotification } from "@/hooks/useNotification";
+
+/** 页面加载占位组件（懒加载 fallback） */
+function PageFallback() {
+  return (
+    <div className="flex min-h-[400px] items-center justify-center">
+      <Spinner size="lg" />
+    </div>
+  );
+}
 
 /** 登录页重定向组件（已登录用户访问 /login 时重定向至 /documents） */
 function LoginRoute() {
@@ -55,6 +71,8 @@ export default function App() {
       <Router>
         {/* E5-02: 离线状态提示（全局生效） */}
         <OfflineIndicator />
+        {/* 懒加载 Suspense 包裹：页面 chunk 加载期间显示 PageFallback */}
+        <Suspense fallback={<PageFallback />}>
         <Routes>
           {/* 根路径重定向至文档管理页 */}
           <Route path="/" element={<Navigate to="/documents" replace />} />
@@ -142,6 +160,7 @@ export default function App() {
           {/* 404 页面 */}
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
+        </Suspense>
 
         {/* 全局 Toast 通知容器 */}
         <ToastContainer />

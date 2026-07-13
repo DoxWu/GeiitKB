@@ -313,6 +313,102 @@ def login(
 
 
 # ============================================
+# 临时登录（游客）接口 - 任务5
+# ============================================
+
+@router.post(
+    "/guest-login",
+    response_model=TokenResponse,
+    summary="临时登录（游客）",
+    # 限流：每分钟最多 5 次临时登录，防止滥用
+    # 作用：避免攻击者批量创建 guest 账号消耗数据库资源
+    dependencies=[Depends(rate_limit("guest_login", per_minute=5))],
+)
+def guest_login(db: Session = Depends(get_db)) -> Any:
+    """
+    临时登录接口（任务5）
+
+    作用：
+        创建临时 guest 用户，返回 JWT Token。
+        guest 用户权限受限：
+        - 最多 GUEST_QUESTION_LIMIT（默认 20）次提问
+        - 禁止上传文档 / URL 导入
+        - 检索仅命中公共文档库（不可访问任何私人文档）
+
+    实现方式：
+        1. 生成随机用户名（guest_ + 16 hex）和随机密码
+        2. 创建 User 记录，user_type='guest'
+        3. 生成 JWT Token（复用 create_token_pair）
+        4. 返回 Token + 用户信息
+
+    响应（200）：
+        {
+            "access_token": "...",
+            "refresh_token": "...",
+            "token_type": "bearer",
+            "expires_in": 900,
+            "user": { ... }
+        }
+
+    错误：
+        429: 临时登录过于频繁
+    """
+    import secrets as _secrets
+
+    # 生成随机临时用户名（guest_ + 16 位 hex）
+    # 作用：避免与正式用户名冲突，且不可预测
+    random_suffix = _secrets.token_hex(8)
+    guest_username = f"{settings.GUEST_USERNAME_PREFIX}{random_suffix}"
+    # guest 邮箱使用 @guest.local 域名，不发送邮件，仅满足唯一约束
+    guest_email = f"{guest_username}@guest.local"
+
+    # 生成随机密码（guest 用户不需要密码登录，但 hashed_password 字段不能为空）
+    random_password = _secrets.token_urlsafe(32)
+    hashed_pw = hash_password(random_password)
+
+    # 创建 guest 用户
+    guest_user = User(
+        username=guest_username,
+        email=guest_email,
+        hashed_password=hashed_pw,
+        is_active=True,
+        is_superuser=False,
+        user_type="guest",
+    )
+    try:
+        db.add(guest_user)
+        db.commit()
+        db.refresh(guest_user)
+    except IntegrityError:
+        # 极低概率用户名/邮箱冲突（token_hex 碰撞），重试一次
+        # 作用：保证接口可用性，避免极小概率冲突导致 500
+        db.rollback()
+        random_suffix = _secrets.token_hex(12)
+        guest_username = f"{settings.GUEST_USERNAME_PREFIX}{random_suffix}"
+        guest_user.username = guest_username
+        guest_user.email = f"{guest_username}@guest.local"
+        db.add(guest_user)
+        db.commit()
+        db.refresh(guest_user)
+
+    # 生成 Access + Refresh Token 对（复用正式登录逻辑）
+    access_token, refresh_token, expires_in = create_token_pair(
+        user_id=guest_user.id,
+        username=guest_user.username,
+    )
+
+    logger.info(f"临时用户登录: user_id={guest_user.id}, username={guest_username}")
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "expires_in": expires_in,
+        "user": guest_user,
+    }
+
+
+# ============================================
 # 刷新 Token 接口
 # ============================================
 

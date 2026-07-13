@@ -132,6 +132,24 @@ def ask_question(
                 detail={"error": {"code": "DUPLICATE_REQUEST", "message": "请求正在处理中，请勿重复提交"}},
             )
 
+    # 任务5：临时用户提问次数限制
+    # 作用：guest 用户最多 GUEST_QUESTION_LIMIT 次提问，防止滥用
+    # 实现：Redis 计数，TTL 24h，仅在 LLM 调用成功后 +1（失败不计数）
+    if getattr(current_user, "user_type", "regular") == "guest":
+        count_key = f"guest:question_count:{current_user.id}"
+        current_count_raw = RedisManager.get(count_key)
+        current_count = int(current_count_raw) if current_count_raw else 0
+        if current_count >= settings.GUEST_QUESTION_LIMIT:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "error": {
+                        "code": "GUEST_QUESTION_LIMIT_EXCEEDED",
+                        "message": f"临时用户提问次数已达上限（{settings.GUEST_QUESTION_LIMIT} 次），请注册正式账号继续使用",
+                    }
+                },
+            )
+
     try:
         # 1. 创建或获取对话
         conversation = _get_or_create_conversation(
@@ -192,9 +210,16 @@ def ask_question(
             question=question_data.question,
             conversation_history=history,
             user_id=current_user.id,
+            user_type=getattr(current_user, "user_type", "regular"),  # 任务5：透传用户类型，guest 仅检索公共库
             summary=effective_summary,
             intent_switched=intent_result.switched,
         )
+
+        # 任务5：guest 用户提问计数 +1（仅在 LLM 调用成功后计数，失败不计数）
+        if getattr(current_user, "user_type", "regular") == "guest":
+            count_key = f"guest:question_count:{current_user.id}"
+            RedisManager.increment(count_key)
+            RedisManager.expire(count_key, settings.GUEST_QUESTION_COUNT_TTL)
 
         # 5. 保存 AI 回答（含降级标记，便于后续质量分析）+ 更新对话轮数
         # 作用：is_degraded/degrade_reason 记录本次回答是否走了兜底路径
@@ -365,6 +390,23 @@ async def ask_question_stream(
                 detail={"error": {"code": "DUPLICATE_REQUEST", "message": "请求正在处理中，请勿重复提交"}},
             )
 
+    # 任务5：临时用户提问次数限制（流式接口）
+    # 作用：guest 用户最多 GUEST_QUESTION_LIMIT 次提问，防止滥用
+    if getattr(current_user, "user_type", "regular") == "guest":
+        count_key = f"guest:question_count:{current_user.id}"
+        current_count_raw = RedisManager.get(count_key)
+        current_count = int(current_count_raw) if current_count_raw else 0
+        if current_count >= settings.GUEST_QUESTION_LIMIT:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "error": {
+                        "code": "GUEST_QUESTION_LIMIT_EXCEEDED",
+                        "message": f"临时用户提问次数已达上限（{settings.GUEST_QUESTION_LIMIT} 次），请注册正式账号继续使用",
+                    }
+                },
+            )
+
     # C-2 修复：同步代码异常时释放幂等锁，防止锁泄漏
     # 作用：原实现锁释放在 event_stream() 的 finally，但生成器未被迭代时
     #       （同步代码抛异常）finally 不执行，锁泄漏 300 秒
@@ -421,6 +463,15 @@ async def ask_question_stream(
         raise
 
     # 4. 定义流式生成器
+    # 捕获纯值，避免在流式生成器中依赖请求级 session 的 ORM 对象
+    # 原因：FastAPI StreamingResponse 中，请求级 Depends(get_db) 的 session
+    #       可能在生成器后处理阶段已失效，导致 ORM 对象脱离 session
+    conv_id = conversation.id
+    user_id_val = current_user.id
+    # 任务5：捕获用户类型，供 event_stream 闭包内 guest 计数使用
+    user_type_val = getattr(current_user, "user_type", "regular")
+    question_text = question_data.question
+
     async def event_stream():
         """
         SSE 事件生成器
@@ -437,6 +488,8 @@ async def ask_question_stream(
             - 最后保存完整的 AI 回答到数据库 + 更新 turn_count + 记录质量埋点
             - 调用 maybe_generate_summary 触发摘要生成（达到阈值时）
             - 异常时保存已累积的部分回答（P1-10），并释放幂等性锁
+            - 后处理 DB 操作使用独立 session（SessionLocal），
+              避免 StreamingResponse 中请求级 session 失效问题
         """
         full_answer = ""
         sources = []
@@ -456,9 +509,10 @@ async def ask_question_stream(
             # 传入 intent_switched 让 RAG 调整 query 改写和 LLM 提示
             # P0-4：此时 DB 事务已关闭，LLM 流式调用期间不会占用 DB 连接
             async for chunk in rag_chain.ask_stream(
-                question=question_data.question,
+                question=question_text,
                 conversation_history=history,
-                user_id=current_user.id,
+                user_id=user_id_val,
+                user_type=user_type_val,  # 任务5：透传用户类型，guest 仅检索公共库
                 summary=effective_summary,
                 intent_switched=intent_result.switched,
             ):
@@ -482,76 +536,93 @@ async def ask_question_stream(
                     degrade_reason = chunk.get("degrade_reason")
                     metrics = chunk.get("metrics", {})
 
+            # 任务5：guest 用户提问计数 +1（流式完成后计数，失败不计数）
+            if user_type_val == "guest":
+                count_key = f"guest:question_count:{user_id_val}"
+                RedisManager.increment(count_key)
+                RedisManager.expire(count_key, settings.GUEST_QUESTION_COUNT_TTL)
+
             # 5. 保存完整的 AI 回答到数据库（含降级标记）+ 更新对话轮数
-            # 作用：turn_count +1 用于记忆衰退判断（达到阈值时触发摘要生成）
-            assistant_message = Message(
-                conversation_id=conversation.id,
-                role="assistant",
-                content=full_answer,
-                sources=sources,
-                is_degraded=degraded,
-                degrade_reason=degrade_reason,
-            )
-            db.add(assistant_message)
-            # C-3 修复：原子递增 turn_count，避免并发丢失更新
-            _increment_turn_count(db, conversation.id)
-            db.commit()
-            db.refresh(assistant_message)
-            db.refresh(conversation)  # 同步 turn_count 内存值，供 maybe_generate_summary 使用
+            # 使用独立 session，避免请求级 session 在 StreamingResponse 中失效
+            from app.core.database import SessionLocal as _SessionLocal
+            post_db = _SessionLocal()
+            try:
+                assistant_message = Message(
+                    conversation_id=conv_id,
+                    role="assistant",
+                    content=full_answer,
+                    sources=sources,
+                    is_degraded=degraded,
+                    degrade_reason=degrade_reason,
+                )
+                post_db.add(assistant_message)
+                # C-3 修复：原子递增 turn_count，避免并发丢失更新
+                _increment_turn_count(post_db, conv_id)
+                post_db.commit()
+                post_db.refresh(assistant_message)
 
-            # 6. 记录 QA 事件质量埋点
-            # 作用：将全链路指标持久化到 qa_events 表
-            # 埋点失败不影响主流程（qa_event_service 内部已 catch all）
-            total_time_ms = int((_time.time() - total_start) * 1000)
-            qa_event_service.record_event(
-                db=db,
-                message_id=assistant_message.id,
-                conversation_id=conversation.id,
-                user_id=current_user.id,
-                question=question_data.question,
-                answer=full_answer,
-                metrics=metrics,
-                degraded=degraded,
-                degrade_reason=degrade_reason,
-                total_time_ms=total_time_ms,
-            )
+                # 重新查询 conversation（独立 session 中的持久实例）
+                fresh_conv = post_db.query(Conversation).filter(
+                    Conversation.id == conv_id
+                ).first()
 
-            # 6.5 Prometheus 指标：记录总处理耗时（含 DB 操作）
-            # 作用：监控流式问答的端到端耗时
-            from app.core.prometheus_metrics import record_total_duration
-            record_total_duration(intent_type, total_time_ms / 1000.0)
+                # 6. 记录 QA 事件质量埋点
+                # 作用：将全链路指标持久化到 qa_events 表
+                # 埋点失败不影响主流程（qa_event_service 内部已 catch all）
+                total_time_ms = int((_time.time() - total_start) * 1000)
+                qa_event_service.record_event(
+                    db=post_db,
+                    message_id=assistant_message.id,
+                    conversation_id=conv_id,
+                    user_id=user_id_val,
+                    question=question_text,
+                    answer=full_answer,
+                    metrics=metrics,
+                    degraded=degraded,
+                    degrade_reason=degrade_reason,
+                    total_time_ms=total_time_ms,
+                )
 
-            # 7. 尝试生成历史摘要（记忆衰退机制）
-            # 作用：当 turn_count 达到 SUMMARY_EVERY_N_TURNS 阈值时，用 LLM 压缩旧对话为摘要
-            # 摘要生成失败不阻塞主流程（maybe_generate_summary 内部已 catch all）
-            history_service.maybe_generate_summary(db, conversation)
+                # 6.5 Prometheus 指标：记录总处理耗时（含 DB 操作）
+                from app.core.prometheus_metrics import record_total_duration
+                record_total_duration(intent_type, total_time_ms / 1000.0)
+
+                # 7. 尝试生成历史摘要（记忆衰退机制）
+                # 作用：当 turn_count 达到 SUMMARY_EVERY_N_TURNS 阈值时，用 LLM 压缩旧对话为摘要
+                # 摘要生成失败不阻塞主流程（maybe_generate_summary 内部已 catch all）
+                if fresh_conv is not None:
+                    history_service.maybe_generate_summary(post_db, fresh_conv)
+            finally:
+                post_db.close()
 
         except Exception:
             # P1-10 修复：保存已累积的部分回答，避免用户重试时上下文丢失
             # 作用：流式输出中途异常时，已生成的部分回答仍有参考价值，持久化到数据库
             #       标记为降级回复（degrade_reason=stream_error），便于后续质量分析
             # P1-15 修复：异常信息脱敏，不向客户端暴露内部错误详情（如 DB 连接串、堆栈等）
-            # 原实现 "content": str(e) 会泄露内部异常信息，存在信息泄露风险
             logger.exception("流式问答处理异常，保存部分回答")
 
-            # 保存部分回答（仅当有实际内容时）
+            # 保存部分回答（仅当有实际内容时），使用独立 session
             if full_answer.strip():
                 try:
-                    partial_message = Message(
-                        conversation_id=conversation.id,
-                        role="assistant",
-                        content=full_answer,
-                        sources=sources,
-                        is_degraded=True,
-                        degrade_reason="stream_error",
-                    )
-                    db.add(partial_message)
-                    # C-3 修复：原子递增 turn_count（异常保存路径）
-                    _increment_turn_count(db, conversation.id)
-                    db.commit()
+                    from app.core.database import SessionLocal as _SessionLocal2
+                    err_db = _SessionLocal2()
+                    try:
+                        partial_message = Message(
+                            conversation_id=conv_id,
+                            role="assistant",
+                            content=full_answer,
+                            sources=sources,
+                            is_degraded=True,
+                            degrade_reason="stream_error",
+                        )
+                        err_db.add(partial_message)
+                        _increment_turn_count(err_db, conv_id)
+                        err_db.commit()
+                    finally:
+                        err_db.close()
                 except Exception:
-                    # 保存部分回答失败也不影响错误事件发送
-                    db.rollback()
+                    pass  # 保存部分回答失败也不影响错误事件发送
 
             # 发送脱敏的错误事件（不暴露内部异常详情）
             error_data = {
@@ -561,19 +632,15 @@ async def ask_question_stream(
             yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
 
         finally:
-            # M-10 修复：客户端断开连接时确保 db session 清理
+            # M-10 修复：客户端断开连接时确保请求级 db session 清理
             # 作用：流式响应中客户端断开会触发 GeneratorExit，此时可能存在未提交的事务
-            #       若不 rollback，dirty session 被 get_db 依赖 close 时可能残留事务，
-            #       导致连接池连接泄漏或 PostgreSQL idle_in_transaction 超时
-            # 实现：rollback 安全（无活动事务时是 no-op），不影响已 commit 的数据
+            #       若不 rollback，dirty session 被 get_db 依赖 close 时可能残留事务
             try:
                 db.rollback()
             except Exception:
                 pass  # session 已关闭或无效，忽略
 
             # 释放幂等性锁（P0-7）
-            # 作用：流式处理完成（无论成功或失败）后释放锁，允许后续请求
-            # H-2: 使用 release_lock 比对 token，防止误删他人锁
             if idempotency_lock_key and idempotency_lock_token:
                 RedisManager.release_lock(idempotency_lock_key, idempotency_lock_token)
 
@@ -625,6 +692,7 @@ def _increment_turn_count(db: Session, conversation_id: int) -> None:
         update(Conversation)
         .where(Conversation.id == conversation_id)
         .values(turn_count=Conversation.turn_count + 1)
+        .execution_options(synchronize_session=False)
     )
 
 

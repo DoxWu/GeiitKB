@@ -25,12 +25,57 @@ services:
     image: pgvector/pgvector:pg16
     container_name: kb_qa_postgres
     restart: unless-stopped
+    # 优化1：PostgreSQL 调优参数（适配 512M 容器，SSD 优化）
+    # 作用：通过 -c 参数逐项覆盖默认值，保留 Docker 入口点创建的默认配置
+    #       （含 listen_addresses='*' 和正确的 pg_hba.conf 路径）
+    # 注意：不使用 config_file 覆盖，否则 PG 找不到 pg_hba.conf 导致启动失败
+    # 参数详解见 backend/scripts/postgresql.conf（参考文档）
+    # Railway 托管 PG 不支持 command 覆盖，用 ALTER SYSTEM 替代（见 RAILWAY_DEPLOYMENT_GUIDE.md）
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=384MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - wal_buffers=4MB
+      - -c
+      - max_wal_size=256MB
+      - -c
+      - max_connections=50
+      - -c
+      - idle_in_transaction_session_timeout=60000
+      - -c
+      - statement_timeout=30000
+      - -c
+      - log_min_duration_statement=1000
+      - -c
+      - log_line_prefix=%t [%p] %u@%d
+      # 任务6：设置 PostgreSQL 时区为北京时间
+      # 作用：使 func.now() 和日志时间戳使用北京时间，与宿主机一致
+      - -c
+      - timezone=Asia/Shanghai
+      - -c
+      - log_timezone=Asia/Shanghai
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: kb_qa
       # 作用：启动时自动创建 pgvector 扩展
       POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+      # 任务6：容器时区设置为北京时间
+      # 作用：统一容器内应用时间与北京时间一致，避免日志/时间戳偏差 8 小时
+      TZ: Asia/Shanghai
     ports:
       - "5432:5432"
     volumes:
@@ -38,11 +83,19 @@ services:
       - postgres_data:/var/lib/postgresql/data
       # 作用：启动时自动创建 pgvector 扩展和全文检索配置
       - ./backend/scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      # 任务6：挂载宿主机时区文件，容器时间与宿主机同步
+      # 作用：ro 只读挂载，容器读取宿主机 /etc/localtime 获取正确时区
+      - /etc/localtime:/etc/localtime:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d kb_qa"]
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
 
   # --------------------------------------------
   # Redis 缓存（缓存 + 限流 + Celery Broker）
@@ -53,15 +106,25 @@ services:
     restart: unless-stopped
     # 作用：开启 AOF 持久化，重启不丢数据；设置最大内存与淘汰策略
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    environment:
+      # 任务6：Redis 容器时区设置
+      TZ: Asia/Shanghai
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+      # 任务6：挂载宿主机时区文件
+      - /etc/localtime:/etc/localtime:ro
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
 
   # --------------------------------------------
   # FastAPI 后端 API 服务
@@ -71,6 +134,10 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        # 本地 ML 依赖开关：设为 true 安装 sentence-transformers（+~800MB torch）
+        # 开发环境默认 false，需要时在 .env 中设置 INSTALL_LOCAL_ML=true
+        INSTALL_LOCAL_ML: ${INSTALL_LOCAL_ML:-false}
     container_name: kb_qa_api
     restart: unless-stopped
     environment:
@@ -89,6 +156,8 @@ services:
       # 启用后访问 /metrics 端点获取指标数据，Prometheus server 抓取此端点
       # 监控栈启动：docker-compose -f docker-compose.yml -f monitoring/docker-compose.monitoring.yml up -d
       ENABLE_PROMETHEUS: "True"
+      # 任务6：API 容器时区设置，使日志时间戳和 datetime.now() 使用北京时间
+      TZ: Asia/Shanghai
       # 其余配置从 .env 文件读取（OPENAI_API_KEY 等）
     env_file:
       - ./backend/.env
@@ -98,6 +167,8 @@ services:
       # 作用：开发环境挂载源码，代码修改即时生效（生产环境注释掉）
       - ./backend:/app
       - uploads_data:/app/uploads
+      # 任务6：挂载宿主机时区文件
+      - /etc/localtime:/etc/localtime:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -110,6 +181,11 @@ services:
       timeout: 10s
       start_period: 40s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.5'
 
   # --------------------------------------------
   # Celery Worker（异步文档处理）
@@ -119,6 +195,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        # 本地 ML 依赖开关（与 api 服务保持一致）
+        INSTALL_LOCAL_ML: ${INSTALL_LOCAL_ML:-false}
     container_name: kb_qa_worker
     restart: unless-stopped
     environment:
@@ -130,11 +209,15 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # 任务6：Worker 容器时区设置
+      TZ: Asia/Shanghai
     env_file:
       - ./backend/.env
     volumes:
       - ./backend:/app
       - uploads_data:/app/uploads
+      # 任务6：挂载宿主机时区文件
+      - /etc/localtime:/etc/localtime:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -143,11 +226,19 @@ services:
       api:
         # 作用：等 API 健康后再启动 worker，确保数据库迁移已完成
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
 
   # --------------------------------------------
   # Flower（Celery 任务监控面板）
   # --------------------------------------------
+  # profiles 作用：默认不启动，需要监控时执行：
+  #   docker-compose --profile monitoring up -d
   flower:
+    profiles: ["monitoring"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -158,10 +249,15 @@ services:
       FLOWER_PORT: 5555
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # 任务6：Flower 容器时区设置
+      TZ: Asia/Shanghai
     env_file:
       - ./backend/.env
     ports:
       - "5555:5555"
+    volumes:
+      # 任务6：挂载宿主机时区文件
+      - /etc/localtime:/etc/localtime:ro
     depends_on:
       - worker
     healthcheck:
@@ -170,6 +266,11 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
 
 # ============================================
 # 持久化卷

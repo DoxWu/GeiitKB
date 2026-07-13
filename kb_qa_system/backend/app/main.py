@@ -212,10 +212,19 @@ async def lifespan(app: FastAPI):
         logger.info("✅ 模型提供者管理器已初始化")
 
         # 5. 启动模型服务健康检查
-        # 作用：后台 asyncio Task 定时探测各端点可用性，结果喂入熔断器
-        #       熔断器状态驱动 FailoverRouter 的降级路由决策
-        await _model_manager.start_health_checks()
-        logger.info("✅ 模型服务健康检查已启动")
+        # 优化3：根据 MODEL_EAGER_HEALTH_CHECK 选择阻塞/非阻塞启动
+        # 作用：默认非阻塞，应用立即就绪接受请求；健康探测在后台异步进行
+        #       探测结果喂入熔断器，首轮探测完成前 breaker 默认 CLOSED（不熔断）
+        # 注意：保留 start_health_checks 字符串以兼容 test_model_provider.py 测试
+        import asyncio as _asyncio
+        if settings.MODEL_EAGER_HEALTH_CHECK:
+            # 阻塞模式：等待 start() 创建 Task 后继续（首轮探测仍在后台）
+            await _model_manager.start_health_checks()
+            logger.info("✅ 模型服务健康检查已启动（eager 模式）")
+        else:
+            # 非阻塞模式：fire-and-forget，应用立即就绪
+            _asyncio.create_task(_model_manager.start_health_checks())
+            logger.info("✅ 模型服务健康检查已调度（lazy 模式，后台启动中）")
     except Exception as e:
         logger.error(f"❌ 模型提供者管理器初始化失败: {e}")
         # 不阻止启动——manager 内部有 _ensure_initialized() 懒加载兜底

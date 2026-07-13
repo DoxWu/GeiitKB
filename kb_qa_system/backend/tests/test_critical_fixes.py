@@ -143,8 +143,14 @@ class TestTurnCountAtomic:
     def test_increment_called_at_least_3_times(self):
         """验证 3 处调用 _increment_turn_count（非流式+流式正常+流式异常）"""
         source = read_source("app/api/routes/chat.py")
-        call_count = source.count("_increment_turn_count(db, conversation.id)")
-        # 函数定义 1 次 + 调用 3 次 = 至少 4 次出现
+        # 统计所有 _increment_turn_count 调用（不含函数定义行）
+        # 注意：流式路径使用独立 session（post_db/err_db）和 conv_id，
+        #       非流式路径使用 db 和 conversation.id，需兼容两种变量名
+        import re
+        call_count = len(re.findall(
+            r"_increment_turn_count\(\s*\w+\s*,\s*\w+(\.\w+)?\s*\)",
+            source
+        ))
         assert call_count >= 3, \
             f"应有至少 3 次调用 _increment_turn_count，实际 {call_count} 次"
 

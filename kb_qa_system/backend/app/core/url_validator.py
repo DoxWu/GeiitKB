@@ -34,6 +34,8 @@ URL 安全校验模块（SSRF 防护）
 import socket
 import ipaddress
 import logging
+import re
+import html
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -410,3 +412,71 @@ def sanitize_filename(filename: str, max_length: int = 100) -> str:
         return "unnamed"
 
     return filename
+
+
+# ============================================
+# 文档标题安全校验 - 任务4
+# ============================================
+
+# 危险字符黑名单正则
+# 作用：匹配控制字符（0x00-0x1f, 0x7f）、Windows 非法文件名字符、
+#       HTML 标签分隔符 < >、路径分隔符 / \、路径遍历 ../
+_DANGEROUS_TITLE_PATTERN = re.compile(
+    r'[\x00-\x1f\x7f<>:"/\\|?*]'   # 控制字符 + Windows 非法字符 + HTML 标签分隔符
+    r'|\.\./'                       # 路径遍历序列
+    r'|^\.\.+$'                     # 纯点号
+)
+
+
+def validate_document_title(title: str) -> str:
+    """
+    校验并清洗文档标题（任务4）
+
+    作用：
+        对用户输入的文档标题进行安全校验，防止：
+        1. 路径遍历攻击（../ 序列）
+        2. XSS 攻击（<script> 等 HTML 标签 → HTML 实体转义）
+        3. 控制字符注入（0x00-0x1f）
+        4. Windows 非法文件名字符（<>:"/\\|?*）
+        5. 过长标题（DB 限制 200 字符）
+
+    实现方式：
+        1. 非空 + 长度校验
+        2. 危险字符正则检测（命中即拒绝，不尝试清洗，避免误伤）
+        3. HTML 实体转义（存储转义，前端渲染时浏览器自动反转义显示）
+
+    参数：
+        title: str - 用户输入的原始标题
+
+    返回:
+        str - 校验通过并 HTML 转义后的安全标题
+
+    异常:
+        ValueError - 标题为空、过长或包含不可清洗的危险字符
+
+    使用示例:
+        >>> validate_document_title("Python指南")
+        'Python指南'
+        >>> validate_document_title("<script>alert(1)</script>")
+        ValueError: 标题包含非法字符（控制字符、路径符号或 HTML 标签）
+    """
+    if not title or not isinstance(title, str) or not title.strip():
+        raise ValueError("标题不能为空")
+
+    title = title.strip()
+
+    # 长度校验（DB 字段 String(200)）
+    if len(title) > 200:
+        raise ValueError("标题长度不能超过 200 字符")
+
+    # 危险字符检测：命中即拒绝
+    # 作用：路径遍历、控制字符、HTML 标签分隔符等不可清洗，直接拒绝
+    if _DANGEROUS_TITLE_PATTERN.search(title):
+        raise ValueError("标题包含非法字符（控制字符、路径符号或 HTML 标签）")
+
+    # HTML 实体转义（防 XSS 存储）
+    # 作用：< → &lt;、> → &gt;、" → &quot;、' → &#x27;、& → &amp;
+    #       前端渲染时浏览器自动反转义，用户看到原始字符，但无法执行脚本
+    title = html.escape(title, quote=True)
+
+    return title

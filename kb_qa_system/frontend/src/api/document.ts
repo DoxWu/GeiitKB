@@ -92,6 +92,28 @@ export async function reprocessDocument(
 }
 
 /**
+ * 移动文档到其他分支
+ *
+ * 调用 PATCH /documents/{id}/move?folder_id={folderId}，
+ * 将文档移动到指定分支，或移出分支（folderId 为 null 时归入未分类）。
+ *
+ * 修复 Issue 6：添加移动文档到其他分支的功能
+ *
+ * @param id - 文档ID
+ * @param folderId - 目标分支ID（null 表示移出分支，归入未分类）
+ * @returns 更新后的文档信息
+ */
+export async function moveDocument(
+  id: number,
+  folderId: number | null,
+): Promise<DocumentResponse> {
+  const query = folderId !== null ? `?folder_id=${folderId}` : "";
+  return apiClient.patch<DocumentResponse>(
+    `${API_PATHS.DOCUMENT_MOVE(id)}${query}`,
+  );
+}
+
+/**
  * 上传文档
  *
  * 调用 POST /documents/upload，使用 multipart/form-data。

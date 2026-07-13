@@ -14,16 +14,20 @@ import {
   RefreshCw,
   Eye,
   MoreVertical,
+  FolderInput,
+  Globe,
+  Lock,
 } from "lucide-react";
 import { useState } from "react";
 import { Badge } from "@/components/common";
 import { useDocumentStore } from "@/store/documentStore";
 import { useToastStore } from "@/store/toastStore";
-import { formatFileSize, formatRelativeTime, getStatusLabel } from "@/utils/format";
+import { formatFileSize, formatRelativeTime, getStatusLabel, getProcessingStepLabel } from "@/utils/format";
 import { getFileIcon } from "@/utils/fileType";
 import { highlightKeyword } from "@/utils/highlight";
 import { cn } from "@/lib/utils";
 import type { DocumentResponse } from "@/types/document";
+import { MoveToFolderModal } from "./MoveToFolderModal";
 
 /** 状态徽章变体映射 */
 const STATUS_VARIANT_MAP: Record<
@@ -48,6 +52,7 @@ export function DocumentItem({ document }: DocumentItemProps) {
   const { openPreview, removeDocument, reprocessDocument, searchKeyword } = useDocumentStore();
   const toast = useToastStore();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [moveModalOpen, setMoveModalOpen] = useState(false);
 
   /** 获取文件图标（使用共享 fileType 工具） */
   const IconComp = getFileIcon(document.file_type);
@@ -57,6 +62,9 @@ export function DocumentItem({ document }: DocumentItemProps) {
 
   /** 是否处理失败（可重新处理） */
   const isFailed = document.status === "failed";
+
+  /** 是否为公共文档库文档（修复 Issue 8：视觉区分公用/个人文档库） */
+  const isPublic = document.visibility === "public";
 
   /** 处理删除 */
   async function handleDelete() {
@@ -81,18 +89,44 @@ export function DocumentItem({ document }: DocumentItemProps) {
     }
   }
 
+  /** 处理移动文档（修复 Issue 6：打开移动到分支弹窗） */
+  function handleMove() {
+    setMenuOpen(false);
+    setMoveModalOpen(true);
+  }
+
   return (
     <div
       className={cn(
-        "group relative flex items-center gap-3 rounded-lg border border-line bg-surface px-4 py-3",
-        "transition-all hover:border-brand hover:shadow-sm",
+        "group relative flex items-center gap-3 rounded-lg border bg-surface px-4 py-3",
+        "transition-all hover:shadow-sm",
         "cursor-pointer animate-slide-in-right",
+        // 修复 Issue 8：公用文档库与个人文档库视觉区分
+        // 公共文档库：蓝色左边框 + 浅蓝背景标识
+        // 个人文档库：默认边框样式
+        isPublic
+          ? "border-blue-200 hover:border-blue-400 dark:border-blue-500/40 dark:hover:border-blue-400"
+          : "border-line hover:border-brand",
       )}
       onClick={() => openPreview(document)}
     >
       {/* 文件类型图标 */}
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
-        <IconComp className="h-5 w-5 text-ink-secondary" />
+      <div
+        className={cn(
+          "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
+          isPublic
+            ? "bg-blue-50 dark:bg-blue-500/20"
+            : "bg-muted",
+        )}
+      >
+        <IconComp
+          className={cn(
+            "h-5 w-5",
+            isPublic
+              ? "text-blue-600 dark:text-blue-400"
+              : "text-ink-secondary",
+          )}
+        />
       </div>
 
       {/* 文档信息 */}
@@ -105,6 +139,24 @@ export function DocumentItem({ document }: DocumentItemProps) {
           <Badge variant={STATUS_VARIANT_MAP[document.status] || "default"}>
             {getStatusLabel(document.status)}
           </Badge>
+          {/* 修复 Issue 8：公用/个人文档库标识 */}
+          {isPublic ? (
+            <span
+              className="inline-flex items-center gap-0.5 rounded-md bg-blue-50 px-1.5 py-0.5 text-xs font-medium text-blue-600 dark:bg-blue-500/20 dark:text-blue-400"
+              title="公共文档库"
+            >
+              <Globe className="h-3 w-3" />
+              公共
+            </span>
+          ) : (
+            <span
+              className="inline-flex items-center gap-0.5 rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium text-ink-secondary"
+              title="个人文档库"
+            >
+              <Lock className="h-3 w-3" />
+              个人
+            </span>
+          )}
         </div>
         <div className="mt-0.5 flex items-center gap-2 text-xs text-ink-tertiary">
           <span>{formatFileSize(document.file_size)}</span>
@@ -122,7 +174,7 @@ export function DocumentItem({ document }: DocumentItemProps) {
         {isProcessing && (
           <div className="mt-2">
             <div className="flex items-center justify-between text-xs text-brand">
-              <span>{document.processing_step || "处理中..."}</span>
+              <span>{getProcessingStepLabel(document.processing_step)}</span>
               <span>{document.processing_progress}%</span>
             </div>
             <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted">
@@ -172,7 +224,18 @@ export function DocumentItem({ document }: DocumentItemProps) {
                   setMenuOpen(false);
                 }}
               />
-              <div className="absolute right-0 top-8 z-20 w-28 rounded-md border border-line bg-surface py-1 shadow-lg">
+              <div className="absolute right-0 top-8 z-20 w-32 rounded-md border border-line bg-surface py-1 shadow-lg">
+                {/* 修复 Issue 6：移动文档到其他分支 */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleMove();
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-ink hover:bg-muted"
+                >
+                  <FolderInput className="h-3 w-3" />
+                  移动到分支
+                </button>
                 {isFailed && (
                   <button
                     onClick={(e) => {
@@ -200,6 +263,14 @@ export function DocumentItem({ document }: DocumentItemProps) {
           )}
         </div>
       </div>
+
+      {/* 修复 Issue 6：移动文档到其他分支弹窗 */}
+      <MoveToFolderModal
+        open={moveModalOpen}
+        documentId={document.id}
+        currentFolderId={document.folder_id}
+        onClose={() => setMoveModalOpen(false)}
+      />
     </div>
   );
 }

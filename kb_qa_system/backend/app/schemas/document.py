@@ -89,6 +89,8 @@ class DocumentResponse(BaseModel):
         "private",
         description="可见性：private 个人文档库 / public 公共文档库"
     )
+    # 修复 Issue 6/8：暴露 folder_id，供前端移动文档、区分分支归属
+    folder_id: Optional[int] = Field(None, description="所属文档库分支ID")
     processing_step: Optional[str] = Field(None, description="当前处理步骤")
     processing_progress: int = Field(0, description="处理进度（0-100）")
     quality_score: Optional[float] = Field(None, description="质量分（0-100）")
@@ -193,3 +195,27 @@ class DocumentProcessSummary(BaseModel):
     page_count: int = 0
     table_count: int = 0
     image_count: int = 0
+
+
+# ============================================
+# 文档重命名请求 - 任务4
+# ============================================
+
+class DocumentRenameRequest(BaseModel):
+    """
+    文档重命名请求 Schema（任务4）
+
+    作用：
+        定义 PATCH /documents/{id}/rename 接口的请求体。
+        title 字段经 Pydantic 基础校验（非空、长度），
+        再由 validate_document_title 做安全校验（路径遍历/XSS/控制字符）。
+
+    示例请求：
+        {"title": "Python异步编程指南"}
+    """
+    title: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="新文档标题（1-200 字符，经安全校验）",
+    )
