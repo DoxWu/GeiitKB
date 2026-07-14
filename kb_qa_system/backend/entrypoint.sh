@@ -66,6 +66,26 @@ start_api() {
 # --------------------------------------------
 start_worker() {
     echo "🔧 启动 Celery Worker..."
+
+    # 启动简单的健康检查 HTTP 服务（后台运行）
+    # Railway 健康检查需要 HTTP 端点，Worker 本身没有，所以启动一个轻量的 HTTP 服务
+    python -c "
+import http.server
+import socketserver
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(b'{\"status\": \"healthy\", \"role\": \"worker\"}')
+    def log_message(self, format, *args):
+        pass  # 静默日志
+with socketserver.TCPServer(('', 8000), Handler) as httpd:
+    httpd.serve_forever()
+" &
+    HEALTH_PID=$!
+
+    # 启动 Celery Worker
     # 注意：使用显式 :celery_app 语法指定应用对象，避免 Celery 自动查找歧义
     exec celery -A app.core.celery_app:celery_app worker \
         --loglevel=info \
