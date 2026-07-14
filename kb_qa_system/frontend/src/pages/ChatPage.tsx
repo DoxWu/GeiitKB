@@ -218,6 +218,14 @@ export default function ChatPage() {
         return;
       }
 
+      // 修复问题3：上传新文档前中断正在进行的文档对话流式请求，
+      // 避免旧流式回调写入已清空的 docMessages 导致对话记录错乱
+      docAbortRef.current?.abort();
+      docAbortRef.current = null;
+      setDocStreaming(false);
+      setDocStreamingContent("");
+      docStreamingContentRef.current = "";
+
       setUploading(true);
       setUploadProgress(0);
 
@@ -276,6 +284,14 @@ export default function ChatPage() {
         toastError("无法使用", "游客无法使用文档对话功能，请注册账号");
         return;
       }
+
+      // 修复问题3：切换文档前中断正在进行的文档对话流式请求，
+      // 避免旧流式回调写入已清空的 docMessages 导致对话记录错乱
+      docAbortRef.current?.abort();
+      docAbortRef.current = null;
+      setDocStreaming(false);
+      setDocStreamingContent("");
+      docStreamingContentRef.current = "";
 
       setSelectingFromLibrary(true);
 
@@ -350,6 +366,21 @@ export default function ChatPage() {
             },
             onError: (msg) => {
               toastError("文档对话失败", msg);
+              // 修复问题3：后端发送 error 事件后不会发送 done 事件，
+              // 已生成的流式内容会随 docStreaming=false 丢失。
+              // 保存部分内容到 docMessages，与用户取消（abort）的处理一致。
+              const partialContent = docStreamingContentRef.current;
+              if (partialContent) {
+                const aiMsg: DocChatMessage = {
+                  id: ++docMsgIdRef.current,
+                  role: "assistant",
+                  content: partialContent + "\n\n_(生成中断，请重试)_",
+                  created_at: new Date().toISOString(),
+                };
+                setDocMessages((prev) => [...prev, aiMsg]);
+                setDocStreamingContent("");
+                docStreamingContentRef.current = "";
+              }
             },
           },
           controller.signal,
@@ -493,12 +524,13 @@ export default function ChatPage() {
       >
         {sidebarOpen && (
           <div
-            // 修复问题1：统一遮罩透明度至 50%，确保高缩放比例下侧边栏与背景清晰分离
-            className="absolute inset-0 bg-black/50 lg:hidden"
+            // 修复：bg-black/50 在高缩放比例下仍与背景过度融合，提升至 bg-black/70
+            className="absolute inset-0 bg-black/70 lg:hidden"
             onClick={() => setSidebarOpen(false)}
           />
         )}
-        <div className="relative h-full w-60">
+        {/* 修复：wrapper 添加 bg-surface 确保侧边栏区域完全不透明 */}
+        <div className="relative h-full w-60 bg-surface">
           <ChatSidebar onCollapse={() => setSidebarOpen(false)} />
         </div>
       </div>

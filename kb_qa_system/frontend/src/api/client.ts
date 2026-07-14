@@ -227,6 +227,10 @@ interface ApiClient {
   request<T>(endpoint: string, options?: RequestOptions): Promise<T>;
   /** GET 请求 */
   get<T>(endpoint: string, options?: RequestOptions): Promise<T>;
+  /** GET 请求（返回纯文本，用于文档预览等非 JSON 响应） */
+  getText(endpoint: string, options?: RequestOptions): Promise<string>;
+  /** GET 请求（返回 Blob，用于 PDF iframe 等二进制响应） */
+  getBlob(endpoint: string, options?: RequestOptions): Promise<Blob>;
   /** POST 请求 */
   post<T>(
     endpoint: string,
@@ -321,6 +325,96 @@ export const apiClient: ApiClient = {
   /** GET 请求 */
   get<T>(endpoint: string, options?: RequestOptions): Promise<T> {
     return this.request(endpoint, { ...options, method: "GET" });
+  },
+
+  /**
+   * GET 请求（返回纯文本）
+   *
+   * 作用：
+   *   与 get<T> 类似，但返回 response.text() 而非 response.json()。
+   *   用于后端返回 PlainTextResponse 的接口（如文档内容预览 /documents/{id}/content）。
+   *   包含完整的 Token 注入、401 自动刷新、网络错误友好提示逻辑。
+   *
+   * @param endpoint - API 路径（不含 baseUrl）
+   * @param options - 请求配置
+   * @returns 响应体纯文本
+   * @throws HttpClientError 当请求失败时抛出
+   */
+  async getText(endpoint: string, options: RequestOptions = {}): Promise<string> {
+    const url = `${API_BASE_URL}${endpoint}`;
+    const autoRefresh = options.autoRefresh !== false;
+
+    const config: RequestInit = {
+      ...options,
+      headers: buildHeaders(options),
+      method: "GET",
+    };
+
+    let response: Response;
+    try {
+      response = await fetch(url, config);
+
+      // 401 时尝试刷新 Token 并重试
+      if (response.status === 401 && autoRefresh && options.auth !== false) {
+        const newToken = await refreshAccessToken();
+        if (newToken) {
+          config.headers = buildHeaders(options);
+          response = await fetch(url, config);
+        }
+      }
+    } catch (err) {
+      throw toFriendlyNetworkError(err);
+    }
+
+    if (!response.ok) {
+      throw await parseError(response);
+    }
+
+    return response.text();
+  },
+
+  /**
+   * GET 请求（返回 Blob）
+   *
+   * 作用：
+   *   用于下载二进制内容（如 PDF 文件流），返回 Blob 供前端创建 Object URL。
+   *   包含完整的 Token 注入、401 自动刷新、网络错误友好提示逻辑。
+   *
+   * @param endpoint - API 路径（不含 baseUrl）
+   * @param options - 请求配置
+   * @returns 响应体 Blob
+   * @throws HttpClientError 当请求失败时抛出
+   */
+  async getBlob(endpoint: string, options: RequestOptions = {}): Promise<Blob> {
+    const url = `${API_BASE_URL}${endpoint}`;
+    const autoRefresh = options.autoRefresh !== false;
+
+    const config: RequestInit = {
+      ...options,
+      headers: buildHeaders(options),
+      method: "GET",
+    };
+
+    let response: Response;
+    try {
+      response = await fetch(url, config);
+
+      if (response.status === 401 && autoRefresh && options.auth !== false) {
+        const newToken = await refreshAccessToken();
+        if (newToken) {
+          config.headers = buildHeaders(options);
+          response = await fetch(url, config);
+        }
+      }
+    } catch (err) {
+      throw toFriendlyNetworkError(err);
+    }
+
+    if (!response.ok) {
+      throw await parseError(response);
+    }
+
+    return response.blob();
   },
 
   /** POST 请求 */

@@ -631,6 +631,15 @@ async def ask_document_stream(
                 f"文档对话 LLM 调用失败: session_id={session_id_val}",
                 exc_info=True,
             )
+            # 修复问题3：保存已生成的部分内容到历史记录，
+            # 支持多轮追问时 LLM 知道之前生成了什么（用户可说"继续"）
+            if full_answer:
+                _save_history(
+                    history_key,
+                    history,
+                    question_text,
+                    full_answer,
+                )
             error_data = {
                 "type": "error",
                 "content": "抱歉，AI 服务暂时不可用，请稍后重试",
@@ -642,6 +651,14 @@ async def ask_document_stream(
             logger.exception(
                 f"文档对话流式处理异常: session_id={session_id_val}"
             )
+            # 修复问题3：保存已生成的部分内容到历史记录
+            if full_answer:
+                _save_history(
+                    history_key,
+                    history,
+                    question_text,
+                    full_answer,
+                )
             error_data = {
                 "type": "error",
                 "content": "抱歉，回答生成过程中出现错误，请稍后重试",

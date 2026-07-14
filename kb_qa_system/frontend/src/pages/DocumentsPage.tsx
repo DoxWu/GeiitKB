@@ -127,15 +127,15 @@ export default function DocumentsPage() {
         )}
       >
         {/* 移动端遮罩 */}
-        {/* 修复问题1：原 bg-black/20 透明度过低，高缩放比例下侧边栏内容与背景过度融合。
-            提升至 bg-black/50 确保 adequate 对比度和视觉层次分离。 */}
+        {/* 修复：bg-black/50 在高缩放比例下仍与背景过度融合，提升至 bg-black/70 确保侧边栏清晰分离 */}
         {sidebarOpen && (
           <div
-            className="absolute inset-0 bg-black/50 lg:hidden"
+            className="absolute inset-0 bg-black/70 lg:hidden"
             onClick={() => setSidebarOpen(false)}
           />
         )}
-        <div className="relative h-full w-60">
+        {/* 修复：wrapper 添加 bg-surface 确保侧边栏区域完全不透明，不依赖内部 aside 的背景 */}
+        <div className="relative h-full w-60 bg-surface">
           <Sidebar
             collapsed={!sidebarOpen}
             onCollapse={() => setSidebarOpen(false)}

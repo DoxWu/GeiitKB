@@ -313,7 +313,18 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     set({ foldersLoading: true });
     try {
       const response = await documentApi.getFolders();
-      set({ folders: response.items, foldersLoading: false });
+      // 修复问题4：防御性检查 — 如果 API 返回空列表但本地已有分支数据，
+      // 不覆盖本地数据，避免因网络抖动或后端临时异常导致分支"莫名消失"。
+      // 仅在本地无分支数据时接受空响应（反映用户确实没有分支的真实状态）。
+      const currentFolders = get().folders;
+      if (
+        (!response.items || response.items.length === 0) &&
+        currentFolders.length > 0
+      ) {
+        set({ foldersLoading: false });
+        return;
+      }
+      set({ folders: response.items || [], foldersLoading: false });
     } catch (err) {
       set({
         foldersLoading: false,

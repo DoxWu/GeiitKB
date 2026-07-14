@@ -38,7 +38,8 @@ import {
   isIframePreviewable,
   isPreviewable,
 } from "@/utils/fileType";
-import { API_BASE_URL } from "@/utils/constants";
+import { apiClient } from "@/api/client";
+import { API_PATHS } from "@/utils/constants";
 import { cn } from "@/lib/utils";
 import type { DocumentResponse } from "@/types/document";
 
@@ -76,9 +77,12 @@ export function DocumentPreview() {
 
   const [previewContent, setPreviewContent] = useState<string>("");
   const [previewState, setPreviewState] = useState<PreviewLoadState>("idle");
+  // PDF blob URL（通过 apiClient.getBlob 获取，带 Token 鉴权）
+  // 作用：iframe 无法设置 Authorization header，需先 fetch 为 Blob 再创建 Object URL
+  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
 
   /** 加载文档内容预览
-   * 作用：对文本类文件请求原始内容，对 PDF 使用 iframe，其他格式显示提示
+   * 作用：对文本类文件请求原始内容，对 PDF 使用 iframe（Blob URL），其他格式显示提示
    */
   const loadPreviewContent = useCallback(async (doc: DocumentResponse) => {
     // 非文本/iframe 类文件不加载内容
@@ -88,29 +92,33 @@ export function DocumentPreview() {
       return;
     }
 
-    // PDF 使用 iframe，不需要加载文本
+    // PDF：通过 apiClient.getBlob 获取文件流，创建 Object URL 供 iframe 使用
+    // 修复：原方案直接在 iframe src 中拼接 API_BASE_URL，无法携带 Token → 401 → 预览失败
     if (isIframePreviewable(doc.file_type)) {
-      setPreviewState("success");
+      setPreviewState("loading");
+      try {
+        const blob = await apiClient.getBlob(
+          API_PATHS.DOCUMENT_DETAIL(doc.id) + "/content",
+        );
+        // 释放旧的 Object URL 避免内存泄漏
+        setPdfBlobUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return URL.createObjectURL(blob);
+        });
+        setPreviewState("success");
+      } catch {
+        setPreviewState("error");
+      }
       return;
     }
 
     // 文本类文件：请求原始内容
+    // 修复：改用 apiClient.getText() 替代原生 fetch，获得 Token 自动刷新和网络错误友好提示
     setPreviewState("loading");
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/documents/${doc.id}/content`,
-        {
-          headers: {
-            Authorization: `Bearer ${JSON.parse(localStorage.getItem("kb_auth_tokens") || "{}").access_token || ""}`,
-          },
-        },
+      const text = await apiClient.getText(
+        API_PATHS.DOCUMENT_DETAIL(doc.id) + "/content",
       );
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const text = await response.text();
       setPreviewContent(text);
       setPreviewState("success");
     } catch {
@@ -126,8 +134,23 @@ export function DocumentPreview() {
     } else {
       setPreviewContent("");
       setPreviewState("idle");
+      // 释放 PDF Object URL 避免内存泄漏
+      setPdfBlobUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
     }
   }, [previewOpen, previewDocument, loadPreviewContent]);
+
+  // 组件卸载时释放 PDF Object URL
+  useEffect(() => {
+    return () => {
+      setPdfBlobUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+    };
+  }, []);
 
   /** 处理删除 */
   async function handleDelete(doc: DocumentResponse) {
@@ -164,10 +187,10 @@ export function DocumentPreview() {
   return (
     <>
       {/* 遮罩层（移动端） */}
-      {/* 修复问题1：原 bg-black/20 透明度过低，高缩放比例下文档详情与背景内容融合。
-          提升至 bg-black/50 确保预览面板与背景清晰分离。 */}
+      {/* 修复问题2：原 bg-black/50 在高缩放比例下仍与背景过度融合，提升至 bg-black/70
+          确保预览面板与背景内容清晰分离。 */}
       <div
-        className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+        className="fixed inset-0 z-40 bg-black/70 lg:hidden"
         onClick={closePreview}
       />
 
@@ -299,10 +322,10 @@ export function DocumentPreview() {
                   </div>
                 )}
 
-                {/* PDF iframe 预览 */}
-                {previewState === "success" && isIframePreviewable(doc.file_type) && (
+                {/* PDF iframe 预览（使用 Blob URL，携带 Token 鉴权） */}
+                {previewState === "success" && isIframePreviewable(doc.file_type) && pdfBlobUrl && (
                   <iframe
-                    src={`${API_BASE_URL}/documents/${doc.id}/content`}
+                    src={pdfBlobUrl}
                     className="h-96 w-full border-0"
                     title={doc.file_name}
                   />
