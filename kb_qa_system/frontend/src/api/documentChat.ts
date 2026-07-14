@@ -41,6 +41,24 @@ export async function uploadDocument(
 }
 
 /**
+ * 从文档库选择文档进行对话
+ *
+ * 调用 POST /document-chat/from-library，复用已处理完成的文档全文内容
+ * （含表格、图片描述）进行文档对话，无需重新上传和解析。
+ *
+ * @param documentId - 文档库中的文档ID
+ * @returns 上传响应（含 session_id）
+ */
+export async function selectDocumentFromLibrary(
+  documentId: number,
+): Promise<DocumentChatUploadResponse> {
+  return apiClient.post<DocumentChatUploadResponse>(
+    API_PATHS.DOCUMENT_CHAT_FROM_LIBRARY,
+    { document_id: documentId },
+  );
+}
+
+/**
  * 文档对话（流式）
  *
  * 调用 POST /document-chat/ask/stream，通过 SSE 逐块返回回答。

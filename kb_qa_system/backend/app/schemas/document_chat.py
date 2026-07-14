@@ -24,3 +24,17 @@ class DocumentChatRequest(BaseModel):
     """文档对话提问请求"""
     session_id: str = Field(..., description="文档对话会话ID")
     question: str = Field(..., min_length=1, max_length=2000, description="问题内容")
+
+
+class DocumentFromLibraryRequest(BaseModel):
+    """
+    从文档库选择文档进行对话的请求
+
+    作用：
+        用户选择个人文档库或公共文档库中已处理的文档，
+        复用其已清洗的全文内容进行文档对话，无需重新上传和解析。
+
+    字段说明：
+        document_id: 文档ID（必须是 status=completed 且当前用户有权访问的文档）
+    """
+    document_id: int = Field(..., gt=0, description="文档库中的文档ID")

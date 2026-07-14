@@ -62,6 +62,7 @@ export const API_PATHS = {
   // 文档对话相关
   DOCUMENT_CHAT_UPLOAD: "/document-chat/upload",
   DOCUMENT_CHAT_ASK_STREAM: "/document-chat/ask/stream",
+  DOCUMENT_CHAT_FROM_LIBRARY: "/document-chat/from-library",
 } as const;
 
 /** 支持上传的文件类型 */

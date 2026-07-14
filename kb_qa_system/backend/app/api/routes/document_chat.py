@@ -4,12 +4,14 @@
 作用：
     定义文档对话功能的 API 接口，包括：
     - 文件上传（解析文本并存入 Redis 供后续提问）
-    - 流式提问（基于上传文档内容进行 SSE 流式回答）
+    - 从文档库选择已处理文档（复用清洗全文+表格+图片描述）
+    - 流式提问（基于文档内容进行 SSE 流式回答）
 
 实现方式：
-    1. 上传：接收文件 → 保存临时文件 → 解析提取文本 → 清洗 → 截断 → 存入 Redis
-    2. 提问：从 Redis 读取文档 → 构造系统提示词 → 调用 LLM 流式接口 → SSE 返回
-    3. 对话历史存储在 Redis 中，支持多轮追问
+    1. 上传：接收文件 → 保存临时文件 → 解析（PDF 含表格提取+图片处理）→ 清洗 → 截断 → 存入 Redis
+    2. 从文档库选择：查询 Document → 权限校验 → 取 content + 表格/图片块 → 截断 → 存入 Redis
+    3. 提问：从 Redis 读取文档 → 构造系统提示词 → 调用 LLM 流式接口 → SSE 返回
+    4. 对话历史存储在 Redis 中，支持多轮追问
 """
 
 import json
@@ -21,17 +23,21 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 from app.core.config import settings
+from app.core.database import get_db
 from app.core.rate_limit import rate_limit
 from app.core.redis import RedisManager
 from app.api.deps import get_current_regular_user
 from app.models.user import User
+from app.models.document import Document
 from app.schemas.document_chat import (
     DocumentChatUploadResponse,
     DocumentChatRequest,
+    DocumentFromLibraryRequest,
 )
 from app.services.document_pipeline.parsers import (
     MarkdownParser,
@@ -40,7 +46,10 @@ from app.services.document_pipeline.parsers import (
 )
 from app.services.document_pipeline.pdf_parser import PdfParser
 from app.services.document_pipeline.cleaner import TextCleaner
+from app.services.document_pipeline.table_extractor import TableExtractor
+from app.services.document_pipeline.image_processor import ImageProcessor
 from app.services.document_pipeline.context import PipelineContext
+from app.services.permission import VISIBILITY_PUBLIC
 from app.services.llm_resilience import get_llm_service, LLMServiceError
 
 
@@ -208,16 +217,24 @@ async def upload_document_for_chat(
             },
         )
     finally:
-        # 无论解析成功与否，都删除临时文件
+        # 无论解析成功与否，都删除临时文件和图片目录
+        # 作用：ImageProcessor 会在文件同目录创建 images_<文件名>/ 存放提取的图片，
+        #       需一并清理避免磁盘泄漏
         _safe_remove(tmp_path)
+        if file_ext == ".pdf":
+            image_dir_name = f"images_{os.path.splitext(os.path.basename(tmp_path))[0]}"
+            image_dir_path = os.path.join(settings.UPLOAD_DIR, image_dir_name)
+            _safe_remove_dir(image_dir_path)
 
-    # 5. 清洗文本
-    # 作用：去除不可见字符、重复空白、乱码片段等，提升 LLM 理解质量
-    try:
-        document_text = _clean_text(document_text)
-    except Exception as e:
-        # 清洗失败不阻断流程，使用原始文本
-        logger.warning(f"文本清洗失败，使用原始文本: {e}")
+    # 5. 清洗文本（仅非 PDF 类型）
+    # 作用：PDF 在 _parse_document 内部已完成清洗（含表格/图片处理），无需重复清洗；
+    #       非 PDF 类型（docx/md/txt）返回的是 raw_text，需单独清洗
+    if file_ext != ".pdf":
+        try:
+            document_text = _clean_text(document_text)
+        except Exception as e:
+            # 清洗失败不阻断流程，使用原始文本
+            logger.warning(f"文本清洗失败，使用原始文本: {e}")
 
     # 6. 截断过长文档
     # 作用：LLM 上下文窗口有限，截断确保有空间容纳问答
@@ -256,6 +273,192 @@ async def upload_document_for_chat(
         file_name=safe_filename,
         file_type=file_ext,
         file_size=file_size,
+        char_count=len(document_text),
+        truncated=truncated,
+    )
+
+
+# ============================================
+# 从文档库选择文档
+# ============================================
+
+@router.post(
+    "/from-library",
+    response_model=DocumentChatUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="从文档库选择文档进行对话",
+    dependencies=[Depends(rate_limit("ask", per_minute=settings.RATE_LIMIT_ASK_PER_MINUTE))],
+)
+async def select_document_from_library(
+    request_data: DocumentFromLibraryRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_regular_user),
+) -> Any:
+    """
+    从文档库选择文档接口（文档对话）
+
+    作用：
+        用户从个人文档库或公共文档库中选择已处理完成的文档，
+        复用其已清洗的全文内容（含表格、图片描述）进行文档对话，
+        无需重新上传和解析。
+
+    实现方式：
+        1. 查询 Document（未软删除、status=completed）
+        2. 权限校验：文档所有者 或 公共文档库可见
+        3. 取 document.content（已清洗全文）作为主文本
+        4. 补充查询 document_chunks 中的表格和图片描述块
+        5. 合并文本 → 截断到 50000 字符 → 存入 Redis
+        6. 返回 session_id
+
+    权限隔离：
+        - 用户仅可选择自己上传的文档 或 公共文档库中的文档
+        - 游客用户被 get_current_regular_user 拦截
+        - 防止通过 document_id 越权访问他人私有文档
+
+    请求体：
+        {"document_id": 1}
+
+    响应（201）：
+        {
+            "session_id": "uuid-xxx",
+            "file_name": "paper.pdf",
+            "file_type": ".pdf",
+            "file_size": 102400,
+            "char_count": 35000,
+            "truncated": false
+        }
+
+    错误：
+        404: 文档不存在 / 未处理完成 / 无权访问
+        400: 文档内容为空
+    """
+    # 1. 查询文档（未软删除）
+    document = db.query(Document).filter(
+        Document.id == request_data.document_id,
+        Document.is_deleted == False,
+    ).first()
+
+    if not document:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": {"code": "DOCUMENT_NOT_FOUND", "message": "文档不存在"}},
+        )
+
+    # 2. 权限校验
+    # 作用：用户仅可访问自己的文档或公共文档库，防止越权
+    # 超级管理员可访问所有文档
+    if not current_user.is_superuser:
+        if document.user_id != current_user.id and document.visibility != VISIBILITY_PUBLIC:
+            # 出于安全考虑，权限不足时返回 404 而非 403，避免泄露文档存在性
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": {"code": "DOCUMENT_NOT_FOUND", "message": "文档不存在"}},
+            )
+
+    # 3. 校验文档处理状态
+    # 作用：只有 completed 状态的文档才有可用的全文内容
+    if document.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": {
+                    "code": "DOCUMENT_NOT_READY",
+                    "message": f"文档尚未处理完成（当前状态: {document.status}），请等待处理完成后再选择",
+                }
+            },
+        )
+
+    # 4. 取主文本（已清洗全文）
+    # 作用：document.content 由流水线清洗后存储，复用避免重新解析
+    document_text = document.content or ""
+
+    # 5. 补充表格和图片描述块
+    # 作用：document.content 只存纯文本，表格和图片描述作为独立块存于 document_chunks
+    #       补充这些内容可让 LLM 理解表格结构和图片信息
+    try:
+        from app.models.document_chunk import DocumentChunk
+
+        extra_chunks = db.query(DocumentChunk).filter(
+            DocumentChunk.document_id == document.id,
+        ).all()
+
+        table_texts: list[str] = []
+        image_texts: list[str] = []
+
+        for chunk in extra_chunks:
+            # metadata_ 是 JSON 字段，存储 chunk_type 等信息
+            chunk_meta = chunk.metadata_ or {}
+            chunk_type = chunk_meta.get("chunk_type", "text")
+
+            if chunk_type == "table" and chunk.content:
+                table_texts.append(chunk.content)
+            elif chunk_type == "image_description" and chunk.content:
+                image_texts.append(chunk.content)
+
+        # 合并表格内容
+        if table_texts:
+            document_text += "\n\n===文档中的表格===\n"
+            document_text += "\n\n".join(table_texts)
+
+        # 合并图片描述
+        if image_texts:
+            document_text += "\n\n===文档中的图片描述===\n"
+            document_text += "\n\n".join(image_texts)
+
+    except Exception as e:
+        # 补充块查询失败不阻断流程，使用已有的纯文本
+        logger.warning(f"查询文档补充块失败，仅使用纯文本: {e}")
+
+    # 6. 校验内容非空
+    if not document_text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": {
+                    "code": "EMPTY_CONTENT",
+                    "message": "文档内容为空，无法进行对话",
+                }
+            },
+        )
+
+    # 7. 截断过长文档
+    truncated = False
+    if len(document_text) > MAX_DOC_CHAT_TEXT_LENGTH:
+        document_text = document_text[:MAX_DOC_CHAT_TEXT_LENGTH]
+        truncated = True
+
+    # 8. 生成 session_id 并存入 Redis
+    session_id = uuid.uuid4().hex
+    redis_key = f"doc_chat:{session_id}"
+    session_data = {
+        "file_name": document.file_name,
+        "file_type": document.file_type,
+        "file_size": document.file_size,
+        "text": document_text,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_id": current_user.id,
+        "source": "library",
+        "source_document_id": document.id,
+    }
+
+    if not RedisManager.set(redis_key, session_data, ttl=DOC_CHAT_SESSION_TTL):
+        logger.error(f"文档对话会话存入 Redis 失败: session_id={session_id}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": {"code": "REDIS_ERROR", "message": "会话存储失败，请稍后重试"}},
+        )
+
+    logger.info(
+        f"文档对话从文档库选择成功: user_id={current_user.id}, session_id={session_id}, "
+        f"document_id={document.id}, chars={len(document_text)}, truncated={truncated}"
+    )
+
+    # 9. 返回响应
+    return DocumentChatUploadResponse(
+        session_id=session_id,
+        file_name=document.file_name,
+        file_type=document.file_type,
+        file_size=document.file_size,
         char_count=len(document_text),
         truncated=truncated,
     )
@@ -463,14 +666,17 @@ async def ask_document_stream(
 
 def _parse_document(file_path: str, file_type: str) -> str:
     """
-    解析文档提取纯文本
+    解析文档提取纯文本（含表格和图片描述）
 
     作用：
         根据文件类型选择对应的解析器，提取文档纯文本。
-        各解析器统一返回文本，由调用方后续清洗。
+        对于 PDF 文件，额外执行表格提取和图片处理（OCR + 多模态描述），
+        将表格的 Markdown 表示和图片描述合并到最终文本中，
+        让 LLM 能理解表格结构和图片信息。
 
     实现方式：
-        - .pdf → PdfParser（通过 parse_to_context 填充上下文）
+        - .pdf → PdfParser + TextCleaner + TableExtractor + ImageProcessor
+                  （合并 cleaned_text + 表格 Markdown + 图片描述）
         - .docx → DocxParser
         - .md → MarkdownParser
         - .txt → TxtParser
@@ -480,7 +686,7 @@ def _parse_document(file_path: str, file_type: str) -> str:
         file_type: str - 文件扩展名（如 .pdf）
 
     返回：
-        str - 提取的纯文本
+        str - 提取的纯文本（PDF 含表格和图片描述）
 
     异常：
         文件解析失败时抛出异常，由调用方捕获处理
@@ -494,7 +700,32 @@ def _parse_document(file_path: str, file_type: str) -> str:
     )
 
     if file_type == ".pdf":
+        # PDF：完整解析 → 清洗 → 表格提取 → 图片处理 → 合并
+        # 作用：PDF 文档结构复杂，需提取表格和图片以保留完整信息
         PdfParser().parse_to_context(ctx)
+
+        # 清洗文本（PdfParser 填充 raw_text，TextCleaner 产出 cleaned_text）
+        TextCleaner().clean(ctx)
+
+        # 表格提取（pdfplumber，含跨页表格合并）
+        # 作用：表格转为 Markdown 格式，让 LLM 能理解表格结构
+        try:
+            TableExtractor().extract(ctx)
+        except Exception as e:
+            logger.warning(f"文档对话表格提取失败（不影响主流程）: {e}")
+
+        # 图片处理（OCR + 多模态描述）
+        # 作用：将图片中的文字和视觉信息转为文本，纳入 LLM 上下文
+        # 依赖配置：ENABLE_OCR / ENABLE_VISION 控制是否启用
+        try:
+            ImageProcessor().extract(ctx)
+        except Exception as e:
+            logger.warning(f"文档对话图片处理失败（不影响主流程）: {e}")
+
+        # 合并所有内容为统一文本
+        # 作用：LLM 上下文需要单一文本流，将正文、表格、图片描述按段落拼接
+        return _compose_full_text(ctx)
+
     elif file_type == ".docx":
         ctx.raw_text = DocxParser().parse(file_path)
     elif file_type == ".md":
@@ -505,6 +736,65 @@ def _parse_document(file_path: str, file_type: str) -> str:
         raise ValueError(f"不支持的文件类型: {file_type}")
 
     return ctx.raw_text
+
+
+def _compose_full_text(ctx: PipelineContext) -> str:
+    """
+    合并流水线上下文中的正文、表格、图片描述为统一文本
+
+    作用：
+        将 PipelineContext 的 cleaned_text、tables（Markdown）、images（OCR + 描述）
+        按逻辑顺序拼接为单一文本流，供 LLM 作为上下文。
+
+    实现方式：
+        1. 以 cleaned_text 为主体
+        2. 追加表格区块（每张表格的 Markdown 表示）
+        3. 追加图片描述区块（OCR 文本 + 多模态描述）
+        4. 各区块用清晰分隔标记，便于 LLM 理解结构
+
+    参数：
+        ctx: PipelineContext - 流水线上下文（已执行解析、清洗、表格提取、图片处理）
+
+    返回：
+        str - 合并后的完整文本
+    """
+    parts: list[str] = []
+
+    # 1. 正文（已清洗）
+    main_text = ctx.cleaned_text or ctx.raw_text or ""
+    if main_text.strip():
+        parts.append(main_text.strip())
+
+    # 2. 表格（Markdown 格式）
+    # 作用：表格作为结构化数据，Markdown 格式让 LLM 能理解行列关系
+    if ctx.tables:
+        table_parts: list[str] = []
+        for table in ctx.tables:
+            if table.markdown:
+                caption = f"（{table.caption}）" if table.caption else ""
+                table_parts.append(f"[表格{table.table_id + 1}{caption}]\n{table.markdown}")
+        if table_parts:
+            parts.append("===文档中的表格===\n" + "\n\n".join(table_parts))
+
+    # 3. 图片描述（OCR + 多模态）
+    # 作用：图片中的文字和视觉信息转为文本，补充纯文本无法表达的内容
+    if ctx.images:
+        image_parts: list[str] = []
+        for img in ctx.images:
+            desc_sections: list[str] = []
+            if img.ocr_text:
+                desc_sections.append(f"OCR文字: {img.ocr_text}")
+            if img.description:
+                desc_sections.append(f"图片描述: {img.description}")
+            if desc_sections:
+                image_parts.append(
+                    f"[图片{img.image_id + 1}（第{img.page_number}页）]\n"
+                    + "；".join(desc_sections)
+                )
+        if image_parts:
+            parts.append("===文档中的图片内容===\n" + "\n\n".join(image_parts))
+
+    return "\n\n".join(parts)
 
 
 def _clean_text(text: str) -> str:
@@ -597,3 +887,22 @@ def _safe_remove(file_path: str) -> None:
             os.remove(file_path)
     except Exception as e:
         logger.warning(f"删除临时文件失败: {file_path}, {e}")
+
+
+def _safe_remove_dir(dir_path: str) -> None:
+    """
+    安全删除目录（递归）
+
+    作用：
+        删除临时图片目录及其内容，目录不存在或删除失败时静默处理。
+        避免清理异常影响主流程。
+
+    参数：
+        dir_path: str - 目录路径
+    """
+    try:
+        if dir_path and os.path.exists(dir_path):
+            import shutil
+            shutil.rmtree(dir_path)
+    except Exception as e:
+        logger.warning(f"删除临时目录失败: {dir_path}, {e}")

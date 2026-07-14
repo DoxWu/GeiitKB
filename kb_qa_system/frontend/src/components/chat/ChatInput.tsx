@@ -19,7 +19,7 @@
  */
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Square, Paperclip, X, FileText, Loader2 } from "lucide-react";
+import { Send, Square, Paperclip, X, FileText, Loader2, Library } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { DocumentChatUploadResponse } from "@/types/documentChat";
 
@@ -33,6 +33,8 @@ interface ChatInputProps {
   onStop: () => void;
   /** 文件选择回调（用户选择文件后触发） */
   onFileSelect?: (file: File) => void;
+  /** 从文档库选择文档回调（点击后打开文档库选择弹窗） */
+  onOpenLibrary?: () => void;
   /** 已上传的文件信息（null 表示未上传） */
   uploadedFile?: DocumentChatUploadResponse | null;
   /** 清除已上传文件回调 */
@@ -62,6 +64,7 @@ export function ChatInput({
   onSend,
   onStop,
   onFileSelect,
+  onOpenLibrary,
   uploadedFile,
   onClearFile,
   uploading = false,
@@ -249,30 +252,53 @@ export function ChatInput({
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-          {/* 文档上传按钮 */}
-          {onFileSelect && !inDocMode && !uploading && (
+          {/* 文档上传按钮 + 文档库选择按钮 */}
+          {!inDocMode && !uploading && (
             <>
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={streaming || uploading}
-                className={cn(
-                  "flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
-                  "transition-colors",
-                  "text-ink-tertiary hover:bg-muted hover:text-brand",
-                  "disabled:cursor-not-allowed disabled:opacity-40",
-                )}
-                aria-label="上传文档"
-                title="上传文档进行对话（PDF/DOCX/MD/TXT，最大 10MB）"
-              >
-                <Paperclip className="h-4 w-4" />
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept={ACCEPTED_TYPES}
-                onChange={handleFileChange}
-                className="hidden"
-              />
+              {/* 上传新文件 */}
+              {onFileSelect && (
+                <>
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={streaming || uploading}
+                    className={cn(
+                      "flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
+                      "transition-colors",
+                      "text-ink-tertiary hover:bg-muted hover:text-brand",
+                      "disabled:cursor-not-allowed disabled:opacity-40",
+                    )}
+                    aria-label="上传文档"
+                    title="上传新文档进行对话（PDF/DOCX/MD/TXT，最大 10MB）"
+                  >
+                    <Paperclip className="h-4 w-4" />
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept={ACCEPTED_TYPES}
+                    onChange={handleFileChange}
+                    className="hidden"
+                  />
+                </>
+              )}
+
+              {/* 从文档库选择已处理文档 */}
+              {onOpenLibrary && (
+                <button
+                  onClick={onOpenLibrary}
+                  disabled={streaming || uploading}
+                  className={cn(
+                    "flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
+                    "transition-colors",
+                    "text-ink-tertiary hover:bg-muted hover:text-brand",
+                    "disabled:cursor-not-allowed disabled:opacity-40",
+                  )}
+                  aria-label="从文档库选择"
+                  title="从文档库选择已处理完成的文档进行对话"
+                >
+                  <Library className="h-4 w-4" />
+                </button>
+              )}
             </>
           )}
 
@@ -342,7 +368,7 @@ export function ChatInput({
           <p className="text-xs text-ink-tertiary">
             {inDocMode
               ? "文档对话模式 · Enter 发送"
-              : "Enter 发送 · Shift+Enter 换行 · 可拖拽文件到输入框上传"}
+              : "Enter 发送 · Shift+Enter 换行 · 📎上传文件 / 📚从文档库选择"}
           </p>
           <p
             className={cn(

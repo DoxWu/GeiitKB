@@ -24,6 +24,7 @@ import { Menu, MessageSquare, FileText } from "lucide-react";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { ChatInput } from "@/components/chat/ChatInput";
+import { DocumentLibraryPicker } from "@/components/chat/DocumentLibraryPicker";
 import { EmptyState, Spinner } from "@/components/common";
 import { useChatStore } from "@/store/chatStore";
 import { useToastStore } from "@/store/toastStore";
@@ -96,6 +97,11 @@ export default function ChatPage() {
   const docAbortRef = useRef<AbortController | null>(null);
   /** 文档消息 ID 自增计数器 */
   const docMsgIdRef = useRef(0);
+
+  /** 文档库选择弹窗是否打开 */
+  const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
+  /** 从文档库选择中（加载文档内容到 Redis） */
+  const [selectingFromLibrary, setSelectingFromLibrary] = useState(false);
 
   /** 当前是否在文档对话模式 */
   const inDocMode = !!docSessionId;
@@ -223,6 +229,43 @@ export default function ChatPage() {
     setDocStreaming(false);
     setDocStreamingContent("");
   }, []);
+
+  /** 从文档库选择文档进行对话 */
+  const handleSelectFromLibrary = useCallback(
+    async (documentId: number) => {
+      if (isGuest) {
+        toastError("无法使用", "游客无法使用文档对话功能，请注册账号");
+        return;
+      }
+
+      setSelectingFromLibrary(true);
+
+      try {
+        const response = await documentChatApi.selectDocumentFromLibrary(
+          documentId,
+        );
+
+        // 切换到文档对话模式
+        setDocSessionId(response.session_id);
+        setUploadedFile(response);
+        setDocMessages([]);
+        setDocStreamingContent("");
+
+        // 提示用户
+        toastSuccess(
+          "文档已加载",
+          `${response.file_name} · ${response.char_count.toLocaleString()} 字符${
+            response.truncated ? "（内容过长已截断）" : ""
+          }`,
+        );
+      } catch (err) {
+        apiError("从文档库加载失败", err);
+      } finally {
+        setSelectingFromLibrary(false);
+      }
+    },
+    [isGuest, toastError, toastSuccess, apiError],
+  );
 
   /** 文档对话发送消息（流式） */
   const handleDocSend = useCallback(
@@ -455,7 +498,7 @@ export default function ChatPage() {
               <EmptyState
                 icon={<MessageSquare className="h-6 w-6" />}
                 title="开始新对话"
-                description="在下方输入框中提问，AI 将基于您的知识库回答。点击📎按钮可上传文档进行对话"
+                description="在下方输入框中提问，AI 将基于您的知识库回答。点击📎上传文档或📚从文档库选择文档进行对话"
                 className="py-0"
               />
             </div>
@@ -478,12 +521,20 @@ export default function ChatPage() {
           onSend={handleSend}
           onStop={handleStop}
           onFileSelect={isGuest ? undefined : handleFileSelect}
+          onOpenLibrary={isGuest ? undefined : () => setLibraryPickerOpen(true)}
           uploadedFile={uploadedFile}
           onClearFile={inDocMode ? handleClearFile : undefined}
-          uploading={uploading}
+          uploading={uploading || selectingFromLibrary}
           uploadProgress={uploadProgress}
         />
       </main>
+
+      {/* 文档库选择弹窗 */}
+      <DocumentLibraryPicker
+        open={libraryPickerOpen}
+        onClose={() => setLibraryPickerOpen(false)}
+        onSelect={handleSelectFromLibrary}
+      />
     </div>
   );
 }
