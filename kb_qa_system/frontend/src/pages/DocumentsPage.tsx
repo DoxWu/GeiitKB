@@ -135,7 +135,7 @@ export default function DocumentsPage() {
             onClick={() => setSidebarOpen(false)}
           />
         )}
-        <div className="relative h-full">
+        <div className="relative h-full w-60">
           <Sidebar
             collapsed={!sidebarOpen}
             onCollapse={() => setSidebarOpen(false)}

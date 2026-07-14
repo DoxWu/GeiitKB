@@ -97,6 +97,14 @@ export default function ChatPage() {
   const docAbortRef = useRef<AbortController | null>(null);
   /** 文档消息 ID 自增计数器 */
   const docMsgIdRef = useRef(0);
+  /**
+   * 文档对话流式内容 ref（同步跟踪最新值）
+   *
+   * 修复：handleDocSend 的 catch 块中直接读取 docStreamingContent state，
+   * 但闭包捕获的是函数调用时的初始值（""），导致 abort 时已生成的内容丢失。
+   * 通过 ref 同步更新，catch 块读取 ref 即可获取最新内容。
+   */
+  const docStreamingContentRef = useRef("");
 
   /** 文档库选择弹窗是否打开 */
   const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
@@ -156,6 +164,7 @@ export default function ChatPage() {
       setUploadedFile(null);
       setDocStreaming(false);
       setDocStreamingContent("");
+      docStreamingContentRef.current = "";
       prevConversationIdRef.current = conversationId;
     }
   }, [conversationId]);
@@ -257,6 +266,7 @@ export default function ChatPage() {
     // 不清空 docMessages：保留文档对话历史，仅退出文档对话模式
     setDocStreaming(false);
     setDocStreamingContent("");
+    docStreamingContentRef.current = "";
   }, []);
 
   /** 从文档库选择文档进行对话 */
@@ -313,6 +323,7 @@ export default function ChatPage() {
       // 启动流式请求
       setDocStreaming(true);
       setDocStreamingContent("");
+      docStreamingContentRef.current = "";
 
       const controller = new AbortController();
       docAbortRef.current = controller;
@@ -322,6 +333,7 @@ export default function ChatPage() {
           { session_id: docSessionId, question },
           {
             onChunk: (text) => {
+              docStreamingContentRef.current += text;
               setDocStreamingContent((prev) => prev + text);
             },
             onDone: (data) => {
@@ -334,6 +346,7 @@ export default function ChatPage() {
               };
               setDocMessages((prev) => [...prev, aiMsg]);
               setDocStreamingContent("");
+              docStreamingContentRef.current = "";
             },
             onError: (msg) => {
               toastError("文档对话失败", msg);
@@ -344,16 +357,18 @@ export default function ChatPage() {
       } catch (err) {
         // 用户取消时不报错
         if (err instanceof DOMException && err.name === "AbortError") {
-          // 保留已生成的内容
-          if (docStreamingContent) {
+          // 修复：使用 ref 读取最新流式内容，而非闭包中的 stale state
+          const partialContent = docStreamingContentRef.current;
+          if (partialContent) {
             const aiMsg: DocChatMessage = {
               id: ++docMsgIdRef.current,
               role: "assistant",
-              content: docStreamingContent + "\n\n_(已中断)_",
+              content: partialContent + "\n\n_(已中断)_",
               created_at: new Date().toISOString(),
             };
             setDocMessages((prev) => [...prev, aiMsg]);
             setDocStreamingContent("");
+            docStreamingContentRef.current = "";
           }
         } else {
           apiError("文档对话失败", err);
@@ -363,7 +378,7 @@ export default function ChatPage() {
         docAbortRef.current = null;
       }
     },
-    [docSessionId, docStreamingContent, apiError, toastError],
+    [docSessionId, apiError, toastError],
   );
 
   /** 文档对话停止生成 */
