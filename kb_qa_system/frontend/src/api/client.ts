@@ -195,6 +195,32 @@ async function parseError(res: Response): Promise<HttpClientError> {
   return new HttpClientError(res.status, detail, message);
 }
 
+/**
+ * 网络错误友好提示
+ * 作用：fetch 在网络不可达、CORS 被拒、DNS 解析失败时抛出 TypeError，
+ *       原始消息为英文 "Failed to fetch"，对中文用户不友好。
+ *       此函数将原始 TypeError 转换为带中文提示的 Error。
+ *
+ * 触发场景：
+ *   - 用户在中国大陆访问海外服务器（如 Railway），网络不通
+ *   - 服务器暂时不可用（部署中、崩溃）
+ *   - CORS 预检失败
+ *
+ * @param err - 原始错误对象
+ * @returns 转换后的 Error（非网络错误原样返回）
+ */
+function toFriendlyNetworkError(err: unknown): Error {
+  if (err instanceof TypeError) {
+    const msg = err.message.toLowerCase();
+    if (msg.includes("failed to fetch") || msg.includes("networkerror") || msg.includes("load failed")) {
+      return new Error(
+        "网络连接失败，无法访问服务器。如果您在中国大陆访问，可能需要使用代理或 VPN。请检查网络连接后重试。",
+      );
+    }
+  }
+  return err as Error;
+}
+
 /** API 客户端接口定义 */
 interface ApiClient {
   /** 发送 HTTP 请求 */
@@ -262,16 +288,22 @@ export const apiClient: ApiClient = {
       headers: buildHeaders(options),
     };
 
-    let response = await fetch(url, config);
+    let response: Response;
+    try {
+      response = await fetch(url, config);
 
-    // 401 时尝试刷新 Token 并重试
-    if (response.status === 401 && autoRefresh && options.auth !== false) {
-      const newToken = await refreshAccessToken();
-      if (newToken) {
-        // 用新 Token 重试原请求
-        config.headers = buildHeaders(options);
-        response = await fetch(url, config);
+      // 401 时尝试刷新 Token 并重试
+      if (response.status === 401 && autoRefresh && options.auth !== false) {
+        const newToken = await refreshAccessToken();
+        if (newToken) {
+          // 用新 Token 重试原请求
+          config.headers = buildHeaders(options);
+          response = await fetch(url, config);
+        }
       }
+    } catch (err) {
+      // 网络错误（无法连接服务器）→ 转换为友好中文提示
+      throw toFriendlyNetworkError(err);
     }
 
     if (!response.ok) {
@@ -383,7 +415,11 @@ export const apiClient: ApiClient = {
       };
 
       xhr.onerror = () => {
-        reject(new HttpClientError(0, "网络请求失败", "网络请求失败"));
+        reject(new HttpClientError(
+          0,
+          "网络连接失败，无法访问服务器。如果您在中国大陆访问，可能需要使用代理或 VPN。请检查网络连接后重试。",
+          "网络连接失败，无法访问服务器。如果您在中国大陆访问，可能需要使用代理或 VPN。请检查网络连接后重试。",
+        ));
       };
 
       // 处理取消信号
@@ -443,12 +479,22 @@ export const apiClient: ApiClient = {
       body: JSON.stringify(body),
     });
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal,
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (err) {
+      // 网络错误（无法连接服务器）→ 转换为友好中文提示
+      // 注意：AbortError 不在此处理（用户主动取消）
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw err;
+      }
+      throw toFriendlyNetworkError(err);
+    }
 
     // 非 2xx 响应：解析错误并抛出
     if (!response.ok) {

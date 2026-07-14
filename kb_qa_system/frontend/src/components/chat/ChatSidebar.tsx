@@ -103,11 +103,8 @@ export function ChatSidebar({ onCollapse }: ChatSidebarProps) {
   return (
     <aside
       className={cn(
-        // 固定 w-60 宽度，始终非透明（bg-surface 为纯白/纯灰，不使用透明度）
-        // 可见性由父容器 ChatPage 的 hidden/block 控制，此处不再用 collapsed 操纵宽度
-        // （此前 collapsed={!sidebarOpen} 在桌面端恒为 true，导致 w-0 侧边栏在正常缩放下不可见，
-        //   仅在 300% 缩放触发移动端布局后才可见）
-        "flex h-full w-60 flex-col border-r border-line bg-surface shadow-xl",
+        // 固定 w-60 宽度，白底不透明，确保移动端抽屉模式下清晰可见
+        "flex h-full w-60 flex-col border-r border-line bg-white shadow-xl",
       )}
     >
       {/* 顶部：品牌标识 */}
