@@ -97,27 +97,35 @@ export async function reprocessDocument(
  * 移动文档到其他分支 / 切换文档库
  *
  * 调用 PATCH /documents/{id}/move?folder_id={folderId}&visibility={visibility}，
- * 将文档移动到指定分支，或移出分支（folderId 为 null 时归入未分类），
- * 同时支持在公共文档库与个人文档库之间迁移（修复问题3b）。
+ * 将文档移动到指定分支，或移出分支，同时支持在公共/个人文档库之间迁移。
+ *
+ * folderId 三种语义：
+ * - number（>0）：移动到指定分支
+ * - null：移出分支（归入未分类），通过 folder_id=0 传递（URL 无法直接传 null）
+ * - undefined：不修改分支（仅切换文档库时使用），不传 folder_id 参数
  *
  * 修复 Issue 6：添加移动文档到其他分支的功能
  * 修复问题3b：添加 visibility 参数，支持库间迁移
+ * 修复422：folderId=undefined 被转为字符串 "undefined" 导致后端校验失败
  *
  * @param id - 文档ID
- * @param folderId - 目标分支ID（null 表示移出分支，归入未分类）
+ * @param folderId - 目标分支ID（null=移出分支，undefined=不修改）
  * @param visibility - 目标文档库（private/public，不传则保持原库不变）
  * @returns 更新后的文档信息
  */
 export async function moveDocument(
   id: number,
-  folderId: number | null,
+  folderId: number | null | undefined,
   visibility?: "private" | "public",
 ): Promise<DocumentResponse> {
   const params = new URLSearchParams();
-  // folder_id 为 null 时不传该参数（后端默认 None = 移出分支）
-  // folder_id 为数字时传具体值
-  if (folderId !== null) {
-    params.set("folder_id", String(folderId));
+  // folderId 语义处理：
+  // - undefined（不修改分支）：不传 folder_id 参数，后端保持原值不变
+  // - null（移出分支）：传 folder_id=0，后端将 0 视为 None（移出分支）
+  //   原因：URLSearchParams 无法传 null 值；传 "null" 或空字符串会被 FastAPI 拒绝（422）
+  // - number（移动到分支）：传 folder_id=具体数字
+  if (folderId !== undefined) {
+    params.set("folder_id", folderId === null ? "0" : String(folderId));
   }
   if (visibility) params.set("visibility", visibility);
   const query = params.toString() ? `?${params.toString()}` : "";

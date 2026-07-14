@@ -968,9 +968,14 @@ def move_document(
     # 修复问题3b：判断 folder_id 是否在查询参数中显式传递
     # 作用：HTTP 查询字符串无法区分"传 null"和"不传"，FastAPI 默认两者都给 None。
     #       通过 request.query_params 判断是否真的传了该参数：
-    #       - 显式传了（含空值）：按传的值更新 folder_id（None=移出分支）
+    #       - 显式传了（含 folder_id=0）：按传的值更新 folder_id（0/None=移出分支）
     #       - 完全没传：保持文档原 folder_id 不变，支持仅切换 visibility
+    #
+    # 修复422：前端用 folder_id=0 表示"移出分支"（URL 无法直接传 null），
+    #          后端需要将 0 转换为 None，否则会查询 ID=0 的分支（不存在 → 400）
     folder_id_provided = "folder_id" in request.query_params
+    if folder_id == 0:
+        folder_id = None
 
     # M-4 修复：超级管理员移动他人文档时记录审计日志
     if current_user.is_superuser and document.user_id != current_user.id:
