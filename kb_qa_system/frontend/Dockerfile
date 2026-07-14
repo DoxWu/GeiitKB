@@ -33,8 +33,8 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 
 # 安装依赖（--legacy-peer-deps 兼容 vite 6 的 peer dep 变更）
-# v3: 强制重新安装依赖，不使用缓存
-RUN npm ci --legacy-peer-deps --prefer-offline=false || npm install --legacy-peer-deps
+# v4: 添加 --no-cache 强制重新下载，解决 Railway 缓存问题
+RUN npm ci --legacy-peer-deps --no-cache || npm install --legacy-peer-deps --no-cache
 
 # 复制源码
 COPY . .
