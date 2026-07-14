@@ -43,7 +43,11 @@ from app.core.config import settings
 """
 
 # SQLAlchemy 兼容性：psycopg3 需要 postgresql+psycopg:// 协议
+# Railway 自动注入的 DATABASE_URL 是 postgresql:// 前缀，需自动修正
 database_url = settings.DATABASE_URL
+if database_url.startswith("postgresql://") and "+psycopg" not in database_url:
+    # 自动将 postgresql:// 转换为 postgresql+psycopg://（psycopg3 驱动）
+    database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
 engine = create_engine(
     database_url,
