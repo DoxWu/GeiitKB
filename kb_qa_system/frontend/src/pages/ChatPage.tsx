@@ -12,6 +12,7 @@
  *   - 新建对话
  *   - 自动滚动到底部
  *   - 移动端侧边栏折叠
+ *   - 文档对话模式：上传文件后切换到文档对话，文档全文注入 LLM 上下文
  *
  * 使用方式：
  *   <ChatPage />  // 由路由 /chat 和 /chat/:conversationId 渲染
@@ -19,14 +20,26 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Menu, MessageSquare } from "lucide-react";
+import { Menu, MessageSquare, FileText } from "lucide-react";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { EmptyState, Spinner } from "@/components/common";
 import { useChatStore } from "@/store/chatStore";
+import { useToastStore } from "@/store/toastStore";
+import { useAuthStore } from "@/store/authStore";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/types/chat";
+import type { DocumentChatUploadResponse } from "@/types/documentChat";
+import * as documentChatApi from "@/api/documentChat";
+
+/** 文档对话本地消息类型 */
+interface DocChatMessage {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
 
 /** ChatPage 组件 */
 export default function ChatPage() {
@@ -47,6 +60,9 @@ export default function ChatPage() {
     clearError,
   } = useChatStore();
 
+  const { apiError, success: toastSuccess, error: toastError } = useToastStore();
+  const { user } = useAuthStore();
+
   // 从 URL 读取 conversationId 参数（支持 /chat/:conversationId 路由）
   const { conversationId } = useParams<{ conversationId: string }>();
 
@@ -58,13 +74,36 @@ export default function ChatPage() {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   // 用户是否在滚动容器底部附近
-  // 作用：智能滚动策略——仅在用户已在底部时自动跟随滚动，
-  //       用户向上浏览历史内容时不强制拉回底部
   const [isAtBottom, setIsAtBottom] = useState(true);
 
-  // 滚动事件处理：判断用户是否在底部
-  // 作用：监听滚动容器的 scroll 事件，根据滚动位置更新 isAtBottom
-  //       阈值 120px：允许小幅偏差，避免因亚像素精度导致误判
+  // ===== 文档对话状态 =====
+  /** 文档对话会话 ID（null 表示知识库问答模式） */
+  const [docSessionId, setDocSessionId] = useState<string | null>(null);
+  /** 已上传的文件信息 */
+  const [uploadedFile, setUploadedFile] =
+    useState<DocumentChatUploadResponse | null>(null);
+  /** 文件上传中 */
+  const [uploading, setUploading] = useState(false);
+  /** 上传进度 */
+  const [uploadProgress, setUploadProgress] = useState(0);
+  /** 文档对话消息列表（本地管理，不走 chatStore） */
+  const [docMessages, setDocMessages] = useState<DocChatMessage[]>([]);
+  /** 文档对话流式输出中 */
+  const [docStreaming, setDocStreaming] = useState(false);
+  /** 文档对话流式内容 */
+  const [docStreamingContent, setDocStreamingContent] = useState("");
+  /** 文档对话 AbortController */
+  const docAbortRef = useRef<AbortController | null>(null);
+  /** 文档消息 ID 自增计数器 */
+  const docMsgIdRef = useRef(0);
+
+  /** 当前是否在文档对话模式 */
+  const inDocMode = !!docSessionId;
+
+  /** 当前用户是否为游客（游客不能使用文档对话） */
+  const isGuest = user?.user_type === "guest";
+
+  /** 滚动事件处理 */
   const handleScroll = useCallback(() => {
     if (!messagesContainerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } =
@@ -74,17 +113,12 @@ export default function ChatPage() {
   }, []);
 
   // 页面加载时获取对话列表
-  // E3-03: 仅在挂载时执行一次。loadConversations 来自 zustand store，
-  // 引用稳定但 lint 无法识别；若加入依赖会导致重复请求。
   useEffect(() => {
     loadConversations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // URL conversationId 变化时，同步选中对话
-  // E3-03: 仅依赖 URL 参数 conversationId 变化触发。
-  // currentConversationId/selectConversation/startNewConversation 来自 store，
-  // 引用稳定但 lint 无法识别；加入依赖会导致 URL 变化时重复触发。
   useEffect(() => {
     if (conversationId !== undefined) {
       const id = Number(conversationId);
@@ -93,7 +127,6 @@ export default function ChatPage() {
         return;
       }
     } else if (currentConversationId !== null && conversationId === undefined) {
-      // 从 /chat/:conversationId 回到 /chat 时，开始新对话
       startNewConversation();
       return;
     }
@@ -101,19 +134,24 @@ export default function ChatPage() {
   }, [conversationId]);
 
   // 切换对话时强制滚动到底部
-  // 作用：加载新对话的消息后，应显示最新消息而非保持旧滚动位置
   useEffect(() => {
     setIsAtBottom(true);
   }, [conversationId]);
 
-  // 自动滚动到底部（仅在用户已在底部时跟随）
-  // 作用：流式输出和消息更新时，如果用户在底部则自动滚动跟随；
-  //       用户向上浏览历史内容时不强制拉回，保障浏览体验
+  // 自动滚动到底部
   useEffect(() => {
     if (isAtBottom && messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages, streamingContent, streaming, isAtBottom]);
+  }, [
+    messages,
+    streamingContent,
+    streaming,
+    isAtBottom,
+    docMessages,
+    docStreamingContent,
+    docStreaming,
+  ]);
 
   // 错误自动清除
   useEffect(() => {
@@ -123,33 +161,201 @@ export default function ChatPage() {
     }
   }, [error, clearError]);
 
+  // 组件卸载时取消文档对话流式请求
+  useEffect(() => {
+    return () => {
+      docAbortRef.current?.abort();
+    };
+  }, []);
+
   /** 当前对话标题 */
-  const currentTitle =
-    conversations.find((c) => c.id === currentConversationId)?.title ||
-    "新对话";
+  const currentTitle = inDocMode
+    ? `📄 ${uploadedFile?.file_name || "文档对话"}`
+    : conversations.find((c) => c.id === currentConversationId)?.title ||
+      "新对话";
 
-  /** 流式输出中的临时 AI 消息 */
-  const streamingMessage: ChatMessage | null = streaming
-    ? {
-        id: -1,
-        role: "assistant",
-        content: streamingContent,
-        sources: streamingSources,
-        created_at: new Date().toISOString(),
+  /** 处理文件上传 */
+  const handleFileSelect = useCallback(
+    async (file: File) => {
+      if (isGuest) {
+        toastError("无法使用", "游客无法使用文档对话功能，请注册账号");
+        return;
       }
-    : null;
 
-  /** 是否显示空状态（无消息且不在加载/流式状态） */
-  const showEmptyState =
-    messages.length === 0 && !streaming && !loadingMessages;
+      setUploading(true);
+      setUploadProgress(0);
 
-  /** 处理发送消息 */
+      try {
+        const response = await documentChatApi.uploadDocument(
+          file,
+          (percent) => setUploadProgress(percent),
+        );
+
+        // 切换到文档对话模式
+        setDocSessionId(response.session_id);
+        setUploadedFile(response);
+        setDocMessages([]);
+        setDocStreamingContent("");
+
+        // 提示用户
+        toastSuccess(
+          "文档已上传",
+          `${response.char_count.toLocaleString()} 字符${
+            response.truncated ? "（内容过长已截断）" : ""
+          }，可以开始提问了`,
+        );
+      } catch (err) {
+        apiError("文档上传失败", err);
+      } finally {
+        setUploading(false);
+        setUploadProgress(0);
+      }
+    },
+    [isGuest, toastError, toastSuccess, apiError],
+  );
+
+  /** 清除文档，恢复知识库问答模式 */
+  const handleClearFile = useCallback(() => {
+    docAbortRef.current?.abort();
+    setDocSessionId(null);
+    setUploadedFile(null);
+    setDocMessages([]);
+    setDocStreaming(false);
+    setDocStreamingContent("");
+  }, []);
+
+  /** 文档对话发送消息（流式） */
+  const handleDocSend = useCallback(
+    async (question: string) => {
+      if (!docSessionId) return;
+
+      // 添加用户消息
+      const userMsg: DocChatMessage = {
+        id: ++docMsgIdRef.current,
+        role: "user",
+        content: question,
+        created_at: new Date().toISOString(),
+      };
+      setDocMessages((prev) => [...prev, userMsg]);
+
+      // 启动流式请求
+      setDocStreaming(true);
+      setDocStreamingContent("");
+
+      const controller = new AbortController();
+      docAbortRef.current = controller;
+
+      try {
+        await documentChatApi.askDocumentStream(
+          { session_id: docSessionId, question },
+          {
+            onChunk: (text) => {
+              setDocStreamingContent((prev) => prev + text);
+            },
+            onDone: (data) => {
+              // 添加完整 AI 消息
+              const aiMsg: DocChatMessage = {
+                id: ++docMsgIdRef.current,
+                role: "assistant",
+                content: data.content || "",
+                created_at: new Date().toISOString(),
+              };
+              setDocMessages((prev) => [...prev, aiMsg]);
+              setDocStreamingContent("");
+            },
+            onError: (msg) => {
+              toastError("文档对话失败", msg);
+            },
+          },
+          controller.signal,
+        );
+      } catch (err) {
+        // 用户取消时不报错
+        if (err instanceof DOMException && err.name === "AbortError") {
+          // 保留已生成的内容
+          if (docStreamingContent) {
+            const aiMsg: DocChatMessage = {
+              id: ++docMsgIdRef.current,
+              role: "assistant",
+              content: docStreamingContent + "\n\n_(已中断)_",
+              created_at: new Date().toISOString(),
+            };
+            setDocMessages((prev) => [...prev, aiMsg]);
+            setDocStreamingContent("");
+          }
+        } else {
+          apiError("文档对话失败", err);
+        }
+      } finally {
+        setDocStreaming(false);
+        docAbortRef.current = null;
+      }
+    },
+    [docSessionId, docStreamingContent, apiError, toastError],
+  );
+
+  /** 文档对话停止生成 */
+  const handleDocStop = useCallback(() => {
+    docAbortRef.current?.abort();
+  }, []);
+
+  /** 统一发送处理 */
   function handleSend(message: string) {
-    // 用户发送新消息时强制滚动到底部
-    // 作用：确保用户能看到自己发送的消息和后续的 AI 回复
     setIsAtBottom(true);
-    sendMessage(message);
+    if (inDocMode) {
+      handleDocSend(message);
+    } else {
+      sendMessage(message);
+    }
   }
+
+  /** 统一停止处理 */
+  function handleStop() {
+    if (inDocMode) {
+      handleDocStop();
+    } else {
+      stopStreaming();
+    }
+  }
+
+  /** 文档对话流式输出中的临时 AI 消息 */
+  const docStreamingMessage: ChatMessage | null =
+    docStreaming && docStreamingContent
+      ? {
+          id: -1,
+          role: "assistant",
+          content: docStreamingContent,
+          created_at: new Date().toISOString(),
+        }
+      : null;
+
+  /** 知识库问答流式输出中的临时 AI 消息 */
+  const kbStreamingMessage: ChatMessage | null =
+    !inDocMode && streaming
+      ? {
+          id: -1,
+          role: "assistant",
+          content: streamingContent,
+          sources: streamingSources,
+          created_at: new Date().toISOString(),
+        }
+      : null;
+
+  /** 是否显示空状态 */
+  const showEmptyState = inDocMode
+    ? docMessages.length === 0 && !docStreaming
+    : messages.length === 0 && !streaming && !loadingMessages;
+
+  /** 当前是否在流式输出 */
+  const isStreaming = inDocMode ? docStreaming : streaming;
+
+  /** 当前要显示的消息列表 */
+  const displayMessages: ChatMessage[] = inDocMode
+    ? docMessages.map((m) => ({
+        ...m,
+        sources: undefined,
+      }))
+    : messages;
 
   return (
     <div className="flex h-screen overflow-hidden bg-canvas">
@@ -160,7 +366,6 @@ export default function ChatPage() {
           sidebarOpen ? "block" : "hidden lg:block",
         )}
       >
-        {/* 移动端遮罩 */}
         {sidebarOpen && (
           <div
             className="absolute inset-0 bg-black/20 lg:hidden"
@@ -168,9 +373,7 @@ export default function ChatPage() {
           />
         )}
         <div className="relative h-full">
-          <ChatSidebar
-            onCollapse={() => setSidebarOpen(false)}
-          />
+          <ChatSidebar onCollapse={() => setSidebarOpen(false)} />
         </div>
       </div>
 
@@ -188,15 +391,27 @@ export default function ChatPage() {
               <Menu className="h-5 w-5" />
             </button>
 
+            {/* 文档对话模式标识 */}
+            {inDocMode && (
+              <FileText className="h-4 w-4 shrink-0 text-brand" />
+            )}
+
             {/* 页面标题 */}
             <h1 className="truncate text-base font-semibold text-ink">
               {currentTitle}
             </h1>
+
+            {/* 文档对话模式标签 */}
+            {inDocMode && (
+              <span className="shrink-0 rounded-full bg-brand/10 px-2 py-0.5 text-xs text-brand">
+                文档对话
+              </span>
+            )}
           </div>
         </header>
 
         {/* 错误提示条 */}
-        {error && (
+        {error && !inDocMode && (
           <div className="border-b border-danger/30 bg-danger/10 px-4 py-2 text-sm text-danger dark:bg-danger/20">
             {error}
           </div>
@@ -208,7 +423,30 @@ export default function ChatPage() {
           onScroll={handleScroll}
           className="flex-1 overflow-y-auto px-4 py-6"
         >
-          {loadingMessages ? (
+          {inDocMode ? (
+            // 文档对话模式
+            showEmptyState ? (
+              <div className="flex h-full items-center justify-center">
+                <EmptyState
+                  icon={<FileText className="h-6 w-6" />}
+                  title="文档已就绪"
+                  description={`已加载 ${uploadedFile?.char_count.toLocaleString()} 字符，在下方输入框提问（翻译、总结、解释等）`}
+                  className="py-0"
+                />
+              </div>
+            ) : (
+              <div className="mx-auto max-w-3xl space-y-4">
+                {displayMessages.map((message) => (
+                  <MessageBubble key={message.id} message={message} />
+                ))}
+                {docStreamingMessage && (
+                  <MessageBubble message={docStreamingMessage} streaming={true} />
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+            )
+          ) : // 知识库问答模式
+          loadingMessages ? (
             <div className="flex h-full items-center justify-center">
               <Spinner className="h-6 w-6 text-brand" />
             </div>
@@ -217,26 +455,18 @@ export default function ChatPage() {
               <EmptyState
                 icon={<MessageSquare className="h-6 w-6" />}
                 title="开始新对话"
-                description="在下方输入框中提问，AI 将基于您的知识库回答"
+                description="在下方输入框中提问，AI 将基于您的知识库回答。点击📎按钮可上传文档进行对话"
                 className="py-0"
               />
             </div>
           ) : (
             <div className="mx-auto max-w-3xl space-y-4">
-              {/* 历史消息列表 */}
-              {messages.map((message) => (
+              {displayMessages.map((message) => (
                 <MessageBubble key={message.id} message={message} />
               ))}
-
-              {/* 流式输出中的临时 AI 消息 */}
-              {streamingMessage && (
-                <MessageBubble
-                  message={streamingMessage}
-                  streaming={true}
-                />
+              {kbStreamingMessage && (
+                <MessageBubble message={kbStreamingMessage} streaming={true} />
               )}
-
-              {/* 滚动锚点 */}
               <div ref={messagesEndRef} />
             </div>
           )}
@@ -244,9 +474,14 @@ export default function ChatPage() {
 
         {/* 输入区 */}
         <ChatInput
-          streaming={streaming}
+          streaming={isStreaming}
           onSend={handleSend}
-          onStop={stopStreaming}
+          onStop={handleStop}
+          onFileSelect={isGuest ? undefined : handleFileSelect}
+          uploadedFile={uploadedFile}
+          onClearFile={inDocMode ? handleClearFile : undefined}
+          uploading={uploading}
+          uploadProgress={uploadProgress}
         />
       </main>
     </div>

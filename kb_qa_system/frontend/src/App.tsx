@@ -34,7 +34,6 @@ const RegisterApplyPage = lazy(() => import("@/pages/RegisterApplyPage"));
 const SetPasswordPage = lazy(() => import("@/pages/SetPasswordPage"));
 const DocumentsPage = lazy(() => import("@/pages/DocumentsPage"));
 const ChatPage = lazy(() => import("@/pages/ChatPage"));
-const DocumentChatPage = lazy(() => import("@/pages/DocumentChatPage"));
 const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
 const AdminApplicationsPage = lazy(() => import("@/pages/AdminApplicationsPage"));
 const PrivacyPage = lazy(() => import("@/pages/PrivacyPage"));
@@ -147,16 +146,6 @@ export default function App() {
               </ProtectedRoute>
             }
           />
-          {/* 文档对话页面（单文档上传后针对文档内容问答） */}
-          <Route
-            path="/document-chat"
-            element={
-              <ProtectedRoute>
-                <DocumentChatPage />
-              </ProtectedRoute>
-            }
-          />
-
           {/* 管理员页面（注册申请管理） */}
           <Route
             path="/admin/applications"
