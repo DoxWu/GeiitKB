@@ -44,6 +44,32 @@ run_migrations() {
 }
 
 # --------------------------------------------
+# 启动 FastAPI API 服务 + Celery Worker（同容器模式）
+# 作用：Railway 部署时 API 和 Worker 不共享文件系统，
+#       将两者放在同一容器中解决文件路径不一致问题。
+#       通过 EMBED_WORKER=true 环境变量启用。
+# --------------------------------------------
+start_api_with_worker() {
+    run_migrations
+
+    WORKERS="${UVICORN_WORKERS:-1}"
+
+    echo "🔧 启动 Celery Worker（后台）..."
+    celery -A app.core.celery_app:celery_app worker \
+        --loglevel=info \
+        --concurrency="${CELERY_WORKER_CONCURRENCY:-2}" \
+        --max-tasks-per-child="${CELERY_MAX_TASKS_PER_CHILD:-100}" &
+
+    echo "🚀 启动 FastAPI 服务（${WORKERS} workers）..."
+    exec uvicorn app.main:app \
+        --host 0.0.0.0 \
+        --port "${PORT:-8000}" \
+        --workers "${WORKERS}" \
+        --proxy-headers \
+        --forwarded-allow-ips='*'
+}
+
+# --------------------------------------------
 # 启动 FastAPI API 服务
 # --------------------------------------------
 start_api() {
@@ -108,6 +134,9 @@ case "${ROLE}" in
     api)
         start_api
         ;;
+    api+worker)
+        start_api_with_worker
+        ;;
     worker)
         start_worker
         ;;
@@ -115,7 +144,7 @@ case "${ROLE}" in
         start_flower
         ;;
     *)
-        echo "❌ 未知角色: ${ROLE}，可选值: api / worker / flower"
+        echo "❌ 未知角色: ${ROLE}，可选值: api / api+worker / worker / flower"
         exit 1
         ;;
 esac
