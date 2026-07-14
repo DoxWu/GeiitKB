@@ -117,16 +117,16 @@ WORKDIR /app
 # 作用：源码独立放在 /app，docker-compose 开发挂载 ./backend:/app 不影响 /opt/venv
 COPY --chown=kbapp:kbapp . /app/
 
-# 赋予入口脚本执行权限 + 创建上传目录
+# 赋予入口脚本执行权限 + 创建运行时目录
 # 注意：Windows 宿主 COPY 不保留执行位，需显式 chmod
-# uploads 目录权限修复：
-#   - .dockerignore 排除了 uploads/，镜像中默认无此目录
-#   - docker-compose 用命名卷挂载 /app/uploads，若镜像中无此目录，
+# uploads/data 目录权限修复：
+#   - .dockerignore 排除了 uploads/ 和 data/，镜像中默认无这些目录
+#   - docker-compose 用命名卷挂载时，若镜像中无此目录，
 #     Docker 会创建 root:root 755 空目录，导致非 root 用户 kbapp 无法写入（HTTP 500）
 #   - 显式创建并 chown 给 kbapp，命名卷首次挂载时继承此权限
 RUN chmod +x /app/entrypoint.sh && \
-    mkdir -p /app/uploads && \
-    chown -R kbapp:kbapp /app/uploads
+    mkdir -p /app/uploads /app/data && \
+    chown -R kbapp:kbapp /app/uploads /app/data
 USER kbapp
 
 # 暴露端口：FastAPI 8000，Flower 5555
