@@ -59,6 +59,9 @@ export const API_PATHS = {
   CHAT_ASK_STREAM: "/chat/ask/stream",
   CONVERSATIONS: "/chat/conversations",
   CONVERSATION_DETAIL: (id: number) => `/chat/conversations/${id}`,
+  // 文档对话相关
+  DOCUMENT_CHAT_UPLOAD: "/document-chat/upload",
+  DOCUMENT_CHAT_ASK_STREAM: "/document-chat/ask/stream",
 } as const;
 
 /** 支持上传的文件类型 */
@@ -123,3 +126,16 @@ export const POLL_INTERVAL = 3000;
 
 /** 轮询最大次数 */
 export const MAX_POLL_COUNT = 100;
+
+/**
+ * 文档对话支持的文件类型
+ *
+ * 作用：
+ *   限定文档对话功能允许上传的文件格式。
+ *   仅支持文本型文档（PDF、Word、Markdown、纯文本），
+ *   不包含表格、演示文稿等不适合纯对话场景的格式。
+ */
+export const DOCUMENT_CHAT_FILE_TYPES = [".pdf", ".docx", ".md", ".txt"];
+
+/** 文档对话最大上传文件大小（10MB） */
+export const DOCUMENT_CHAT_MAX_FILE_SIZE = 10 * 1024 * 1024;

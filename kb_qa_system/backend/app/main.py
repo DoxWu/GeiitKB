@@ -30,6 +30,7 @@ from app.api.routes.registration import router as registration_router
 from app.api.routes.documents import router as documents_router
 from app.api.routes.chat import router as chat_router
 from app.api.routes.stats import router as stats_router
+from app.api.routes.document_chat import router as document_chat_router
 from app.api.routes.metrics import router as metrics_router
 from app.api.routes.folders import router as folders_router
 from app.api.ws_notifications import router as ws_notifications_router
@@ -393,6 +394,7 @@ app.include_router(registration_router, prefix=settings.API_V1_PREFIX)
 app.include_router(documents_router, prefix=settings.API_V1_PREFIX)
 app.include_router(folders_router, prefix=settings.API_V1_PREFIX)
 app.include_router(chat_router, prefix=settings.API_V1_PREFIX)
+app.include_router(document_chat_router, prefix=settings.API_V1_PREFIX)
 app.include_router(stats_router, prefix=settings.API_V1_PREFIX)
 # metrics 路由不加 API_V1_PREFIX，放在根路径（/metrics）
 app.include_router(metrics_router)

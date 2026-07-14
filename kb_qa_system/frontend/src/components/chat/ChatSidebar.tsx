@@ -16,13 +16,14 @@
  */
 
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import {
   BookOpen,
   Plus,
   LogOut,
   MessageSquare,
   Files,
+  FileText,
   Trash2,
   Settings,
   ChevronLeft,
@@ -49,6 +50,7 @@ interface ChatSidebarProps {
 /** ChatSidebar 组件 */
 export function ChatSidebar({ onCollapse }: ChatSidebarProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const {
     conversations,
     currentConversationId,
@@ -60,6 +62,12 @@ export function ChatSidebar({ onCollapse }: ChatSidebarProps) {
   const { user, logout } = useAuthStore();
   const toast = useToastStore();
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+
+  // 当前激活的导航项（基于 URL 路径判断）
+  const isDocumentsActive = location.pathname.startsWith("/documents");
+  const isChatActive =
+    location.pathname.startsWith("/chat") && !isDocumentsActive;
+  const isDocumentChatActive = location.pathname.startsWith("/document-chat");
 
   /** 处理新对话 */
   function handleNewConversation() {
@@ -113,25 +121,43 @@ export function ChatSidebar({ onCollapse }: ChatSidebarProps) {
         </div>
 
         {/* 导航链接 */}
-        <div className="mt-3 flex gap-1">
+        <div className="mt-3 grid grid-cols-3 gap-1">
           <button
             onClick={() => navigate("/documents")}
             className={cn(
-              "flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium",
-              "text-ink-secondary transition-colors hover:bg-muted hover:text-ink",
+              "flex items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+              isDocumentsActive
+                ? "bg-brand-light text-brand"
+                : "text-ink-secondary hover:bg-muted hover:text-ink",
             )}
           >
             <Files className="h-3.5 w-3.5" />
             知识库
           </button>
           <button
+            onClick={() => navigate("/chat")}
             className={cn(
-              "flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium",
-              "bg-brand-light text-brand",
+              "flex items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+              isChatActive
+                ? "bg-brand-light text-brand"
+                : "text-ink-secondary hover:bg-muted hover:text-ink",
             )}
           >
             <MessageSquare className="h-3.5 w-3.5" />
             问答
+          </button>
+          <button
+            onClick={() => navigate("/document-chat")}
+            className={cn(
+              "flex items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+              isDocumentChatActive
+                ? "bg-brand-light text-brand"
+                : "text-ink-secondary hover:bg-muted hover:text-ink",
+            )}
+            title="上传文档后针对文档内容问答"
+          >
+            <FileText className="h-3.5 w-3.5" />
+            文档对话
           </button>
         </div>
       </div>
