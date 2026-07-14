@@ -36,7 +36,11 @@ config = context.config
 
 # 从应用配置覆盖数据库 URL
 # 作用：统一使用 .env 中的数据库配置，不依赖 alembic.ini
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Railway 兼容：自动转换 postgresql:// → postgresql+psycopg://
+database_url = settings.DATABASE_URL
+if database_url.startswith("postgresql://") and "+psycopg" not in database_url:
+    database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+config.set_main_option("sqlalchemy.url", database_url)
 
 # 日志配置
 if config.config_file_name is not None:
