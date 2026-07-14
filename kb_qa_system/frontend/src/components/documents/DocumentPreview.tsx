@@ -164,8 +164,10 @@ export function DocumentPreview() {
   return (
     <>
       {/* 遮罩层（移动端） */}
+      {/* 修复问题1：原 bg-black/20 透明度过低，高缩放比例下文档详情与背景内容融合。
+          提升至 bg-black/50 确保预览面板与背景清晰分离。 */}
       <div
-        className="fixed inset-0 z-40 bg-black/20 lg:hidden"
+        className="fixed inset-0 z-40 bg-black/50 lg:hidden"
         onClick={closePreview}
       />
 
@@ -192,7 +194,8 @@ export function DocumentPreview() {
         {/* 内容区 */}
         <div className="flex-1 overflow-y-auto p-4">
           {/* 文件图标与名称 */}
-          <div className="flex flex-col items-center gap-3 rounded-lg bg-muted/50 py-6">
+          {/* 修复问题1：原 bg-muted/50 半透明，高缩放下与背景融合。改为不透明 bg-muted。 */}
+          <div className="flex flex-col items-center gap-3 rounded-lg bg-muted py-6">
             <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-surface shadow-sm">
               <IconComp className="h-8 w-8 text-brand" />
             </div>
@@ -222,8 +225,9 @@ export function DocumentPreview() {
           </div>
 
           {/* 处理进度 */}
+          {/* 修复问题1：原 bg-brand-light/50 半透明，改为不透明 bg-brand-light 增强可读性 */}
           {isProcessing && (
-            <div className="mt-4 rounded-lg border border-brand-light bg-brand-light/50 p-3">
+            <div className="mt-4 rounded-lg border border-brand-light bg-brand-light p-3">
               <div className="flex items-center justify-between text-xs text-brand">
                 <span>{getProcessingStepLabel(doc.processing_step)}</span>
                 <span>{doc.processing_progress}%</span>
@@ -277,7 +281,8 @@ export function DocumentPreview() {
               <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-tertiary">
                 内容预览
               </h4>
-              <div className="rounded-lg border border-line bg-muted/30 overflow-hidden">
+              {/* 修复问题1：原 bg-muted/30 过于透明，提升至 bg-muted/60 增强内容可读性 */}
+              <div className="rounded-lg border border-line bg-muted/60 overflow-hidden">
                 {/* 加载中 */}
                 {previewState === "loading" && (
                   <div className="flex items-center justify-center gap-2 py-12 text-sm text-ink-secondary">
@@ -320,7 +325,8 @@ export function DocumentPreview() {
               <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-tertiary">
                 内容预览
               </h4>
-              <div className="flex flex-col items-center gap-2 rounded-lg border border-line bg-muted/30 py-12 text-sm text-ink-tertiary">
+              {/* 修复问题1：原 bg-muted/30 过于透明，提升至 bg-muted/60 */}
+            <div className="flex flex-col items-center gap-2 rounded-lg border border-line bg-muted/60 py-12 text-sm text-ink-tertiary">
                 <FileWarning className="h-6 w-6" />
                 <span>该文件类型暂不支持在线预览</span>
                 <span className="text-xs">({doc.file_type})</span>

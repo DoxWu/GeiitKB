@@ -18,6 +18,7 @@ import { useToastStore } from "@/store/toastStore";
 import { SUPPORTED_FILE_TYPES, MAX_FILE_SIZE } from "@/utils/constants";
 import { formatFileSize } from "@/utils/format";
 import { cn } from "@/lib/utils";
+import type { DocumentScope, DocumentVisibility } from "@/types/document";
 
 /** 上传中的文件状态 */
 interface UploadingFile {
@@ -37,12 +38,18 @@ interface UploadingFile {
 interface UploadZoneProps {
   /** 当前分支ID */
   folderId?: number | null;
+  /**
+   * 当前文档范围（修复问题3a：上传时根据 scope 派生 visibility）
+   * - public：上传到公共文档库（visibility=public，非管理员会被后端降级为 private）
+   * - mine / accessible：上传到个人文档库（visibility=private）
+   */
+  scope?: DocumentScope;
   /** 是否紧凑模式（在工具栏中使用） */
   compact?: boolean;
 }
 
 /** UploadZone 组件 */
-export function UploadZone({ folderId, compact = false }: UploadZoneProps) {
+export function UploadZone({ folderId, scope, compact = false }: UploadZoneProps) {
   const { uploadDocument } = useDocumentStore();
   const toast = useToastStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -109,10 +116,19 @@ export function UploadZone({ folderId, compact = false }: UploadZoneProps) {
       };
       setUploadingFiles((prev) => [...prev, fileEntry]);
 
+      // 修复问题3a：根据当前 scope 派生 visibility，确保拖拽/点击上传能正确归类
+      // - scope=public → visibility=public（公共文档库，非管理员会被后端降级为 private）
+      // - scope=mine/accessible → visibility=private（个人文档库）
+      // 作用：此前未传 visibility，后端默认 private，导致用户在公共库视图下上传的文档
+      //       仍归入个人库，列表刷新后看不到，被误判为"统一出现在全部文档"。
+      const visibility: DocumentVisibility =
+        scope === "public" ? "public" : "private";
+
       try {
         await uploadDocument(
           {
             file,
+            visibility,
             folder_id: folderId ?? undefined,
           },
           (percent) => {
@@ -155,7 +171,7 @@ export function UploadZone({ folderId, compact = false }: UploadZoneProps) {
         );
       }, 3000);
     },
-    [folderId, uploadDocument, toast],
+    [folderId, scope, uploadDocument, toast],
   );
 
   /** 处理文件选择 */

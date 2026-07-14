@@ -118,6 +118,13 @@ async def upload_document(
         default="private",
         description="可见性：private 个人文档库（默认）/ public 公共文档库（仅管理员）"
     ),
+    # 修复问题3a：添加 folder_id 参数，支持上传时直接归类到目标分支
+    # 作用：此前上传接口不接受 folder_id，文档一律归入未分类，
+    #       用户需手动移动。修复后可在上传时指定目标分支。
+    folder_id: Optional[int] = Form(
+        None, ge=0,
+        description="所属分支ID（≥1 指定分支；0 或不传表示未分类）"
+    ),
     db: Session = Depends(get_db),
     # 任务5：上传接口限制为正式用户，guest 用户返回 403
     current_user: User = Depends(get_current_regular_user),
@@ -292,6 +299,28 @@ async def upload_document(
         # 校验可见性（普通用户请求 public 会被降级为 private）
         effective_visibility = permission_service.validate_visibility(visibility, current_user)
 
+        # 修复问题3a：校验并设置 folder_id
+        # 作用：此前上传接口不接受 folder_id，文档一律归入未分类。
+        #       修复后支持上传时指定目标分支，并校验分支归属权限。
+        effective_folder_id = None
+        if folder_id is not None and folder_id > 0:
+            from app.models.document_folder import DocumentFolder
+            target_folder = db.query(DocumentFolder).filter(
+                DocumentFolder.id == folder_id,
+            ).first()
+            if not target_folder:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={"error": {"code": "FOLDER_NOT_FOUND", "message": "目标分支不存在"}},
+                )
+            # 分支是用户私有的，只能上传到自己的分支（超管例外）
+            if target_folder.user_id != current_user.id and not current_user.is_superuser:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={"error": {"code": "FOLDER_ACCESS_DENIED", "message": "无权使用该分支"}},
+                )
+            effective_folder_id = folder_id
+
         db_document = Document(
             title=doc_title,
             file_name=safe_filename,
@@ -304,6 +333,7 @@ async def upload_document(
             processing_progress=0,
             user_id=current_user.id,
             visibility=effective_visibility,
+            folder_id=effective_folder_id,
             metadata_={"category": category, "tags": tag_list} if tag_list else None,
         )
 
@@ -855,46 +885,65 @@ def reprocess_document(
 
 
 # ============================================
-# 移动文档到其他分支
+# 移动文档到其他分支 / 切换文档库
 # ============================================
 
 @router.patch(
     "/{document_id}/move",
     response_model=DocumentResponse,
-    summary="移动文档到其他分支"
+    summary="移动文档到其他分支 / 切换文档库"
 )
 def move_document(
+    request: Request,
     # L-4 修复：路径参数正整数校验
     document_id: int = Path(..., ge=1, description="文档ID（正整数）"),
-    # 目标分支ID（null 表示移出分支，归入"未分类"）
+    # 目标分支ID（null 表示移出分支，归入"未分类"；不传则保持原 folder_id 不变）
+    # 修复问题3b：原实现不传 folder_id 也会被置为 None（移出分支），
+    #             导致用户无法仅切换文档库而不动分支。
+    #             修复后通过 request.query_params 判断是否显式传递。
     folder_id: Optional[int] = Query(
-        None, description="目标分支ID（null 表示移出分支，归入未分类）"
+        None, description="目标分支ID（null 表示移出分支，归入未分类；不传则保持不变）"
+    ),
+    # 修复问题3b：添加 visibility 参数，支持在公共库/个人库之间迁移
+    # 作用：原接口只能改 folder_id，无法切换文档库（public/private），
+    #       导致用户上传错库后无法通过界面操作重新归类。
+    #       修复后可同时切换分支和文档库（两参数可独立或组合使用）。
+    visibility: Optional[str] = Query(
+        None,
+        description="目标文档库：private 个人文档库 / public 公共文档库（仅管理员）。"
+                    "不传则保持原 visibility 不变。",
     ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> Any:
     """
-    移动文档到其他分支
+    移动文档到其他分支 / 切换文档库
 
     作用：
-        将文档从一个分支移动到另一个分支，或移出分支（归入未分类）。
-        用于文档分类管理，支持跨分支迁移。
+        将文档从一个分支移动到另一个分支，或移出分支（归入未分类），
+        同时支持在公共文档库与个人文档库之间迁移。
+        folder_id 和 visibility 两参数可独立或组合使用：
+        - 仅传 folder_id：移动分支，保持库不变
+        - 仅传 visibility：切换库，保持分支不变
+        - 同时传：两者都更新
 
     实现方式：
         1. 验证文档存在且用户有管理权限
-        2. 验证目标分支存在且属于当前用户
-        3. 更新文档的 folder_id
-        4. 返回更新后的文档信息
+        2. 验证目标分支存在且属于当前用户（若显式指定 folder_id）
+        3. 校验并设置目标 visibility（若指定，非管理员请求 public 会被降级为 private）
+        4. 更新文档的 folder_id（仅在显式传递时）和 visibility
+        5. 返回更新后的文档信息
 
     路径参数：
         - document_id: 文档ID
 
     查询参数：
-        - folder_id: 目标分支ID（null 表示移出分支）
+        - folder_id: 目标分支ID（显式传 null/0 表示移出分支；不传则保持不变）
+        - visibility: 目标文档库（private/public，不传则保持不变）
 
     错误：
         404: 文档不存在或无权操作
-        400: 目标分支不存在或不属于当前用户
+        400: 目标分支不存在或不属于当前用户 / visibility 取值非法
     """
     # 权限校验：移动属于管理操作（自己的 / 超级管理员）
     if not permission_service.can_manage_document(
@@ -916,6 +965,13 @@ def move_document(
             detail={"error": {"code": "DOCUMENT_NOT_FOUND", "message": "文档不存在"}}
         )
 
+    # 修复问题3b：判断 folder_id 是否在查询参数中显式传递
+    # 作用：HTTP 查询字符串无法区分"传 null"和"不传"，FastAPI 默认两者都给 None。
+    #       通过 request.query_params 判断是否真的传了该参数：
+    #       - 显式传了（含空值）：按传的值更新 folder_id（None=移出分支）
+    #       - 完全没传：保持文档原 folder_id 不变，支持仅切换 visibility
+    folder_id_provided = "folder_id" in request.query_params
+
     # M-4 修复：超级管理员移动他人文档时记录审计日志
     if current_user.is_superuser and document.user_id != current_user.id:
         _audit_superuser_action(
@@ -923,11 +979,14 @@ def move_document(
             superuser_id=current_user.id,
             document_id=document_id,
             owner_id=document.user_id,
-            extra={"target_folder_id": folder_id},
+            extra={
+                "target_folder_id": folder_id if folder_id_provided else "(unchanged)",
+                "target_visibility": visibility,
+            },
         )
 
-    # 验证目标分支（如果指定了 folder_id）
-    if folder_id is not None:
+    # 验证目标分支（如果显式指定了 folder_id 且非 null）
+    if folder_id_provided and folder_id is not None:
         from app.models.document_folder import DocumentFolder
         target_folder = db.query(DocumentFolder).filter(
             DocumentFolder.id == folder_id,
@@ -945,14 +1004,34 @@ def move_document(
                 detail={"error": {"code": "FOLDER_ACCESS_DENIED", "message": "无权使用该分支"}}
             )
 
-    # 更新文档的 folder_id
-    document.folder_id = folder_id
+    # 修复问题3b：校验并设置目标 visibility
+    # 作用：支持在公共库/个人库之间迁移
+    # 注意：validate_visibility 会将非管理员请求的 public 降级为 private，
+    #       保证普通用户无法通过此接口将文档移入公共库。
+    if visibility is not None:
+        if visibility not in (VISIBILITY_PRIVATE, VISIBILITY_PUBLIC):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": {
+                        "code": "INVALID_VISIBILITY",
+                        "message": f"visibility 取值非法，必须为 {VISIBILITY_PRIVATE} 或 {VISIBILITY_PUBLIC}",
+                    }
+                },
+            )
+        effective_visibility = permission_service.validate_visibility(visibility, current_user)
+        document.visibility = effective_visibility
+
+    # 更新文档的 folder_id（仅在显式传递时）
+    if folder_id_provided:
+        document.folder_id = folder_id
     db.commit()
     db.refresh(document)
 
     logger.info(
-        f"文档已移动: doc_id={document_id}, target_folder_id={folder_id}, "
-        f"operator={current_user.id}"
+        f"文档已移动: doc_id={document_id}, "
+        f"target_folder_id={folder_id if folder_id_provided else '(unchanged)'}, "
+        f"target_visibility={visibility}, operator={current_user.id}"
     )
 
     return document
@@ -1330,7 +1409,7 @@ def batch_delete_documents(
 @router.post(
     "/batch-move",
     response_model=BatchOperationResponse,
-    summary="批量移动文档到分支",
+    summary="批量移动文档到分支 / 批量切换文档库",
 )
 def batch_move_documents(
     body: BatchMoveRequest,
@@ -1339,32 +1418,63 @@ def batch_move_documents(
     current_user: User = Depends(get_current_active_user),
 ) -> Any:
     """
-    批量移动文档到分支
+    批量移动文档到分支 / 批量切换文档库
 
     作用：
-        一次性将多个文档移动到目标分支或移出分支（归入未分类）。
+        一次性将多个文档移动到目标分支或移出分支（归入未分类），
+        同时支持在公共文档库与个人文档库之间批量迁移（修复问题3b）。
         逐个校验权限，无权操作的文档记入 failed 列表。
 
     请求体：
         {"document_ids": [1, 2, 3], "folder_id": 5}
         {"document_ids": [1, 2, 3], "folder_id": null}  # 移出分支
+        {"document_ids": [1, 2, 3], "folder_id": 5, "visibility": "public"}  # 移到分支5并切到公共库
+        {"document_ids": [1, 2, 3], "visibility": "private"}  # 仅切到个人库
 
     响应（200）：
         {"success_count": 3, "failed": [], "total": 3}
 
     错误：
-        400: 目标分支不存在或无权使用
+        400: 目标分支不存在或无权使用 / visibility 取值非法
         400: document_ids 为空或超过 100 个
     """
     doc_ids = body.document_ids
+    # 修复问题3b：通过 model_dump(exclude_unset=True) 判断 folder_id/visibility 是否显式传递
+    # 作用：JSON body 中 "folder_id": null 和不传 folder_id 在 Pydantic 默认行为下都解析为 None，
+    #       无法区分"移出到未分类"和"保持原分支不变"两种语义。
+    #       使用 exclude_unset 只包含客户端显式传递的字段，可精确区分。
+    body_provided = body.model_dump(exclude_unset=True)
+    folder_id_provided = "folder_id" in body_provided
+    visibility_provided = "visibility" in body_provided
     target_folder_id = body.folder_id
+    # 修复问题3b：读取目标 visibility，支持批量在公共库/个人库之间迁移
+    target_visibility = body.visibility
     total = len(doc_ids)
     success_count = 0
     failed = []
 
-    # 验证目标分支（如果指定了 folder_id）
+    # 修复问题3b：校验 target_visibility 取值合法性
+    # 作用：提前拦截非法取值，避免逐个文档处理时重复校验
+    if visibility_provided and target_visibility is not None and target_visibility not in (VISIBILITY_PRIVATE, VISIBILITY_PUBLIC):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": {
+                    "code": "INVALID_VISIBILITY",
+                    "message": f"visibility 取值非法，必须为 {VISIBILITY_PRIVATE} 或 {VISIBILITY_PUBLIC}",
+                }
+            },
+        )
+    # 提前计算 effective_visibility（非管理员请求 public 会被降级为 private）
+    effective_visibility = (
+        permission_service.validate_visibility(target_visibility, current_user)
+        if visibility_provided and target_visibility is not None
+        else None
+    )
+
+    # 验证目标分支（如果显式指定了 folder_id 且非 null）
     # 作用：提前校验，避免逐个文档校验时重复查询
-    if target_folder_id is not None:
+    if folder_id_provided and target_folder_id is not None:
         from app.models.document_folder import DocumentFolder
         target_folder = db.query(DocumentFolder).filter(
             DocumentFolder.id == target_folder_id,
@@ -1405,11 +1515,18 @@ def batch_move_documents(
                 superuser_id=current_user.id,
                 document_id=doc_id,
                 owner_id=document.user_id,
-                extra={"target_folder_id": target_folder_id},
+                extra={
+                    "target_folder_id": target_folder_id if folder_id_provided else "(unchanged)",
+                    "target_visibility": target_visibility if visibility_provided else "(unchanged)",
+                },
             )
 
-        # 更新 folder_id
-        document.folder_id = target_folder_id
+        # 修复问题3b：仅在显式传递 folder_id 时更新（否则保持原分支不变）
+        if folder_id_provided:
+            document.folder_id = target_folder_id
+        # 修复问题3b：如有指定 effective_visibility，则同步更新文档库归属
+        if effective_visibility is not None:
+            document.visibility = effective_visibility
         db.commit()
 
         success_count += 1

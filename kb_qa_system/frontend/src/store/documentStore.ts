@@ -109,8 +109,12 @@ interface DocumentState {
   removeDocument: (id: number) => Promise<void>;
   /** 重新处理文档 */
   reprocessDocument: (id: number) => Promise<void>;
-  /** 移动文档到其他分支（修复 Issue 6） */
-  moveDocument: (id: number, folderId: number | null) => Promise<void>;
+  /** 移动文档到其他分支 / 切换文档库（修复 Issue 6 + 问题3b） */
+  moveDocument: (
+    id: number,
+    folderId: number | null | undefined,
+    visibility?: "private" | "public",
+  ) => Promise<void>;
 
   // ===== 搜索与排序 =====
   /** 设置搜索关键词（不立即加载，由组件防抖触发） */
@@ -143,8 +147,11 @@ interface DocumentState {
   clearSelection: () => void;
   /** 批量删除选中的文档 */
   batchDelete: () => Promise<BatchOperationResponse>;
-  /** 批量移动选中的文档到目标分支 */
-  batchMove: (folderId: number | null) => Promise<BatchOperationResponse>;
+  /** 批量移动选中的文档到目标分支 / 批量切换文档库（修复问题3b） */
+  batchMove: (
+    folderId: number | null | undefined,
+    visibility?: "private" | "public",
+  ) => Promise<BatchOperationResponse>;
 
   // ===== 轮询管理 =====
   /** 检查并启动处理中文档的状态轮询 */
@@ -440,9 +447,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     }
   },
 
-  moveDocument: async (id: number, folderId: number | null) => {
+  moveDocument: async (id, folderId, visibility) => {
     try {
-      await documentApi.moveDocument(id, folderId);
+      await documentApi.moveDocument(id, folderId, visibility);
       // 移动后重新加载文档列表，反映新的分支归属
       await get().loadDocuments();
     } catch (err) {
@@ -536,13 +543,13 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     return result;
   },
 
-  batchMove: async (folderId: number | null) => {
+  batchMove: async (folderId, visibility) => {
     const { selectedDocIds } = get();
     const ids = Array.from(selectedDocIds);
     if (ids.length === 0) {
       throw new Error("未选中任何文档");
     }
-    const result = await documentApi.batchMoveDocuments(ids, folderId);
+    const result = await documentApi.batchMoveDocuments(ids, folderId, visibility);
     // 清空选择并重新加载列表
     set({ selectedDocIds: new Set<number>(), selectionMode: false });
     await get().loadDocuments();

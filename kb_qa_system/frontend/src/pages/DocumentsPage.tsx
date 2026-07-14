@@ -127,9 +127,11 @@ export default function DocumentsPage() {
         )}
       >
         {/* 移动端遮罩 */}
+        {/* 修复问题1：原 bg-black/20 透明度过低，高缩放比例下侧边栏内容与背景过度融合。
+            提升至 bg-black/50 确保 adequate 对比度和视觉层次分离。 */}
         {sidebarOpen && (
           <div
-            className="absolute inset-0 bg-black/20 lg:hidden"
+            className="absolute inset-0 bg-black/50 lg:hidden"
             onClick={() => setSidebarOpen(false)}
           />
         )}
@@ -197,7 +199,11 @@ export default function DocumentsPage() {
                 游客无权提交
               </span>
             ) : (
-              <UploadZone folderId={currentFolderId} compact />
+              <UploadZone
+                folderId={currentFolderId}
+                scope={currentScope}
+                compact
+              />
             )}
 
             {/* URL 导入按钮（游客隐藏） */}
@@ -241,7 +247,10 @@ export default function DocumentsPage() {
               </div>
             ) : (
               <div className="mx-auto max-w-2xl">
-                <UploadZone folderId={currentFolderId} />
+                <UploadZone
+                  folderId={currentFolderId}
+                  scope={currentScope}
+                />
               </div>
             )
           ) : (

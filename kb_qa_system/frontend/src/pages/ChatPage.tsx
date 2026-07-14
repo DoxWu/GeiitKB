@@ -139,6 +139,27 @@ export default function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
+  /**
+   * 修复问题1：切换对话或新建对话时清除文档对话历史
+   *
+   * 作用：
+   *   当用户通过侧边栏切换到其他对话或点击"新对话"时，
+   *   URL 中的 conversationId 会变化，此时清除上一轮的文档对话历史，
+   *   避免残留的 docMessages 干扰新对话的显示。
+   *   注意：首次挂载时不触发清除（prevRef 初始值与 conversationId 一致）。
+   */
+  const prevConversationIdRef = useRef(conversationId);
+  useEffect(() => {
+    if (prevConversationIdRef.current !== conversationId) {
+      setDocMessages([]);
+      setDocSessionId(null);
+      setUploadedFile(null);
+      setDocStreaming(false);
+      setDocStreamingContent("");
+      prevConversationIdRef.current = conversationId;
+    }
+  }, [conversationId]);
+
   // 切换对话时强制滚动到底部
   useEffect(() => {
     setIsAtBottom(true);
@@ -220,12 +241,20 @@ export default function ChatPage() {
     [isGuest, toastError, toastSuccess, apiError],
   );
 
-  /** 清除文档，恢复知识库问答模式 */
+  /**
+   * 清除文档，恢复知识库问答模式
+   *
+   * 修复问题1：此前清除文档时会清空 docMessages，导致文档对话历史完全消失。
+   * 修复后：仅清除文档会话和文件信息，保留 docMessages 历史记录。
+   *   - 用户仍可在当前界面查看之前的文档问答记录
+   *   - 新提问将走知识库问答模式（chatStore）
+   *   - 上传/选择新文档时才清空 docMessages（见 handleFileSelect / handleSelectFromLibrary）
+   */
   const handleClearFile = useCallback(() => {
     docAbortRef.current?.abort();
     setDocSessionId(null);
     setUploadedFile(null);
-    setDocMessages([]);
+    // 不清空 docMessages：保留文档对话历史，仅退出文档对话模式
     setDocStreaming(false);
     setDocStreamingContent("");
   }, []);
@@ -361,16 +390,22 @@ export default function ChatPage() {
     }
   }
 
-  /** 文档对话流式输出中的临时 AI 消息 */
-  const docStreamingMessage: ChatMessage | null =
-    docStreaming && docStreamingContent
-      ? {
-          id: -1,
-          role: "assistant",
-          content: docStreamingContent,
-          created_at: new Date().toISOString(),
-        }
-      : null;
+  /** 文档对话流式输出中的临时 AI 消息
+   *
+   * 修复问题2：此前条件为 `docStreaming && docStreamingContent`，
+   * 导致流式开始但首个文本块到达前（content 为空）不显示消息气泡，
+   * 用户看不到大模型头像和思考状态指示。
+   * 修复后：只要 docStreaming 为 true 即创建消息气泡，
+   * MessageBubble 组件通过 `streaming && !content` 判断显示 TypingIndicator。
+   */
+  const docStreamingMessage: ChatMessage | null = docStreaming
+    ? {
+        id: -1,
+        role: "assistant",
+        content: docStreamingContent,
+        created_at: new Date().toISOString(),
+      }
+    : null;
 
   /** 知识库问答流式输出中的临时 AI 消息 */
   const kbStreamingMessage: ChatMessage | null =
@@ -384,21 +419,53 @@ export default function ChatPage() {
         }
       : null;
 
+  /**
+   * 是否有文档对话历史（文档已清除但历史消息仍保留）
+   *
+   * 修复问题1：清除文档后 docMessages 仍保留，
+   * 需在非文档模式下继续展示这些历史消息。
+   */
+  const hasDocHistory = !inDocMode && docMessages.length > 0;
+
   /** 是否显示空状态 */
   const showEmptyState = inDocMode
     ? docMessages.length === 0 && !docStreaming
-    : messages.length === 0 && !streaming && !loadingMessages;
+    : docMessages.length === 0 &&
+      messages.length === 0 &&
+      !streaming &&
+      !loadingMessages;
 
   /** 当前是否在流式输出 */
   const isStreaming = inDocMode ? docStreaming : streaming;
 
-  /** 当前要显示的消息列表 */
+  /**
+   * 当前要显示的消息列表
+   *
+   * 修复问题1：文档对话模式下显示 docMessages；
+   * 非文档模式但有文档历史时，先展示文档对话历史，再展示知识库问答消息，
+   * 用分隔符标记两段对话的边界，让用户清晰区分。
+   */
   const displayMessages: ChatMessage[] = inDocMode
     ? docMessages.map((m) => ({
         ...m,
         sources: undefined,
       }))
-    : messages;
+    : hasDocHistory
+      ? [
+          ...docMessages.map((m) => ({
+            ...m,
+            sources: undefined,
+          })),
+          // 分隔标记消息：在文档历史和知识库问答之间插入视觉分隔
+          {
+            id: -2,
+            role: "assistant" as const,
+            content: "__DOC_HISTORY_DIVIDER__",
+            created_at: new Date().toISOString(),
+          },
+          ...messages,
+        ]
+      : messages;
 
   return (
     <div className="flex h-screen overflow-hidden bg-canvas">
@@ -411,7 +478,8 @@ export default function ChatPage() {
       >
         {sidebarOpen && (
           <div
-            className="absolute inset-0 bg-black/40 lg:hidden"
+            // 修复问题1：统一遮罩透明度至 50%，确保高缩放比例下侧边栏与背景清晰分离
+            className="absolute inset-0 bg-black/50 lg:hidden"
             onClick={() => setSidebarOpen(false)}
           />
         )}
@@ -504,9 +572,23 @@ export default function ChatPage() {
             </div>
           ) : (
             <div className="mx-auto max-w-3xl space-y-4">
-              {displayMessages.map((message) => (
-                <MessageBubble key={message.id} message={message} />
-              ))}
+              {displayMessages.map((message) =>
+                // 修复问题1：分隔标记消息渲染为视觉分隔线，不作为普通消息气泡
+                message.content === "__DOC_HISTORY_DIVIDER__" ? (
+                  <div
+                    key={message.id}
+                    className="flex items-center gap-3 py-2"
+                  >
+                    <div className="h-px flex-1 bg-line" />
+                    <span className="text-xs text-ink-tertiary">
+                      文档已清除 · 以下为知识库问答
+                    </span>
+                    <div className="h-px flex-1 bg-line" />
+                  </div>
+                ) : (
+                  <MessageBubble key={message.id} message={message} />
+                ),
+              )}
               {kbStreamingMessage && (
                 <MessageBubble message={kbStreamingMessage} streaming={true} />
               )}

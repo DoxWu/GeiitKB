@@ -94,22 +94,33 @@ export async function reprocessDocument(
 }
 
 /**
- * 移动文档到其他分支
+ * 移动文档到其他分支 / 切换文档库
  *
- * 调用 PATCH /documents/{id}/move?folder_id={folderId}，
- * 将文档移动到指定分支，或移出分支（folderId 为 null 时归入未分类）。
+ * 调用 PATCH /documents/{id}/move?folder_id={folderId}&visibility={visibility}，
+ * 将文档移动到指定分支，或移出分支（folderId 为 null 时归入未分类），
+ * 同时支持在公共文档库与个人文档库之间迁移（修复问题3b）。
  *
  * 修复 Issue 6：添加移动文档到其他分支的功能
+ * 修复问题3b：添加 visibility 参数，支持库间迁移
  *
  * @param id - 文档ID
  * @param folderId - 目标分支ID（null 表示移出分支，归入未分类）
+ * @param visibility - 目标文档库（private/public，不传则保持原库不变）
  * @returns 更新后的文档信息
  */
 export async function moveDocument(
   id: number,
   folderId: number | null,
+  visibility?: "private" | "public",
 ): Promise<DocumentResponse> {
-  const query = folderId !== null ? `?folder_id=${folderId}` : "";
+  const params = new URLSearchParams();
+  // folder_id 为 null 时不传该参数（后端默认 None = 移出分支）
+  // folder_id 为数字时传具体值
+  if (folderId !== null) {
+    params.set("folder_id", String(folderId));
+  }
+  if (visibility) params.set("visibility", visibility);
+  const query = params.toString() ? `?${params.toString()}` : "";
   return apiClient.patch<DocumentResponse>(
     `${API_PATHS.DOCUMENT_MOVE(id)}${query}`,
   );
@@ -134,21 +145,34 @@ export async function batchDeleteDocuments(
 }
 
 /**
- * 批量移动文档到分支（多选功能）
+ * 批量移动文档到分支 / 批量切换文档库（多选功能）
  *
- * 调用 POST /documents/batch-move，一次性将多个文档移动到目标分支或移出分支。
+ * 调用 POST /documents/batch-move，一次性将多个文档移动到目标分支或移出分支，
+ * 同时支持批量在公共文档库与个人文档库之间迁移（修复问题3b）。
  *
  * @param documentIds - 要移动的文档ID列表（1-100 个）
- * @param folderId - 目标分支ID（null 表示移出分支，归入未分类）
+ * @param folderId - 目标分支ID（null 表示移出分支，归入未分类；不传则保持各文档原分支不变）
+ * @param visibility - 目标文档库（private/public，不传则保持各文档原库不变）
  * @returns 批量操作结果（成功数 + 失败详情）
  */
 export async function batchMoveDocuments(
   documentIds: number[],
-  folderId: number | null,
+  folderId?: number | null,
+  visibility?: "private" | "public",
 ): Promise<BatchOperationResponse> {
+  // 修复问题3b：仅在 folderId 非 undefined 时包含 folder_id 字段
+  // 作用：JSON body 中不包含 folder_id 字段时，后端不会修改分支归属，
+  //       支持仅切换文档库而不动分支。
+  const payload: Record<string, unknown> = { document_ids: documentIds };
+  if (folderId !== undefined) {
+    payload.folder_id = folderId;
+  }
+  if (visibility) {
+    payload.visibility = visibility;
+  }
   return apiClient.post<BatchOperationResponse>(
     API_PATHS.DOCUMENT_BATCH_MOVE,
-    { document_ids: documentIds, folder_id: folderId },
+    payload,
   );
 }
 
@@ -175,7 +199,11 @@ export async function uploadDocument(
   if (params.title) formData.append("title", params.title);
   if (params.category) formData.append("category", params.category);
   if (params.visibility) formData.append("visibility", params.visibility);
-  if (params.folder_id) formData.append("folder_id", String(params.folder_id));
+  // 修复问题3a：folder_id=0 是合法值（未分类哨兵），不能用 if(params.folder_id) 判断（0 是 falsy）
+  // 必须用 !== undefined 判断，否则用户上传到"未分类"分支时 folder_id 不会被传递
+  if (params.folder_id !== undefined) {
+    formData.append("folder_id", String(params.folder_id));
+  }
 
   return apiClient.upload<DocumentResponse>(
     API_PATHS.DOCUMENT_UPLOAD,

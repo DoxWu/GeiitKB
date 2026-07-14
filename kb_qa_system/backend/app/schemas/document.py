@@ -250,11 +250,14 @@ class BatchMoveRequest(BaseModel):
 
     作用：
         定义 POST /documents/batch-move 接口的请求体。
-        支持一次性将多个文档移动到目标分支或移出分支（归入未分类）。
+        支持一次性将多个文档移动到目标分支或移出分支（归入未分类），
+        同时支持在公共文档库与个人文档库之间批量迁移（修复问题3b）。
 
     示例请求：
         {"document_ids": [1, 2, 3], "folder_id": 5}
         {"document_ids": [1, 2, 3], "folder_id": null}
+        {"document_ids": [1, 2, 3], "folder_id": 5, "visibility": "public"}
+        {"document_ids": [1, 2, 3], "visibility": "private"}  # 仅切库不改分支
     """
     document_ids: List[int] = Field(
         ...,
@@ -265,6 +268,12 @@ class BatchMoveRequest(BaseModel):
     folder_id: Optional[int] = Field(
         None,
         description="目标分支ID（null 表示移出分支，归入未分类）",
+    )
+    # 修复问题3b：添加 visibility 字段，支持批量在公共库/个人库之间迁移
+    visibility: Optional[str] = Field(
+        None,
+        description="目标文档库：private 个人文档库 / public 公共文档库（仅管理员）。"
+                    "不传则保持各文档原 visibility 不变。",
     )
 
 

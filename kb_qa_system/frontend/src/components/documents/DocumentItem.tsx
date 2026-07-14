@@ -309,11 +309,12 @@ export function DocumentItem({ document }: DocumentItemProps) {
       </div>
       )}
 
-      {/* 修复 Issue 6：移动文档到其他分支弹窗 */}
+      {/* 修复 Issue 6：移动文档到其他分支弹窗 + 修复问题3b：切换文档库 */}
       <MoveToFolderModal
         open={moveModalOpen}
         documentId={document.id}
         currentFolderId={document.folder_id}
+        currentVisibility={document.visibility}
         onClose={() => setMoveModalOpen(false)}
       />
     </div>
