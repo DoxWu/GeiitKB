@@ -1119,7 +1119,20 @@ def get_document_content(
     #       防止恶意构造的 file_path 访问上传目录外的文件
     file_abs_path = os.path.join(settings.UPLOAD_DIR, os.path.basename(document.file_path))
     if not os.path.exists(file_abs_path):
-        logger.error(f"文档文件不存在: doc_id={document_id}, path={file_abs_path}")
+        # 修复问题2：原始文件不存在时（如 Docker volume 重建、迁移导致文件丢失），
+        # 回退到数据库中的 document.content（流水线已清洗的全文内容），避免 404 错误。
+        # 前端通过 Content-Type: text/plain 识别回退内容，对 PDF 改用 <pre> 展示而非 iframe。
+        if document.content and document.content.strip():
+            logger.info(
+                f"文档原始文件不存在，返回数据库已处理内容: doc_id={document_id}, "
+                f"path={file_abs_path}"
+            )
+            return PlainTextResponse(
+                document.content,
+                media_type="text/plain; charset=utf-8",
+                headers={"X-Preview-Fallback": "content"},
+            )
+        logger.error(f"文档文件不存在且无已处理内容: doc_id={document_id}, path={file_abs_path}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": {"code": "FILE_NOT_FOUND", "message": "文件不存在于服务器"}}

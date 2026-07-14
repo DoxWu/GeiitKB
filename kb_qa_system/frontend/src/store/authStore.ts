@@ -22,6 +22,7 @@ import {
 } from "@/api/client";
 import { TOKEN_STORAGE_KEY, USER_STORAGE_KEY } from "@/utils/constants";
 import type { TokenResponse, UserResponse, LoginRequest } from "@/types/user";
+import { useDocumentStore } from "@/store/documentStore";
 
 /** 认证 Store 状态接口 */
 interface AuthState {
@@ -144,6 +145,9 @@ export const useAuthStore = create<AuthState>((set) => ({
     } catch {
       // 忽略登出请求失败
     } finally {
+      // 修复问题3：登出时重置 documentStore，清除前一个用户的分支/文档数据，
+      // 防止切换账户后数据残留（如普通账户→游客→换回时分支丢失或看到他人分支）
+      useDocumentStore.getState().reset();
       clearTokens();
       localStorage.removeItem(USER_STORAGE_KEY);
       set({
@@ -166,6 +170,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       await authApi.deleteAccount(password, refreshToken);
 
       // 清除本地状态（不调用 logout API，避免重复黑名单请求）
+      useDocumentStore.getState().reset();
       clearTokens();
       localStorage.removeItem(USER_STORAGE_KEY);
       set({
@@ -203,6 +208,7 @@ export const useAuthStore = create<AuthState>((set) => ({
  */
 registerTokenExpiredCallback(() => {
   localStorage.removeItem(USER_STORAGE_KEY);
+  useDocumentStore.getState().reset();
   useAuthStore.setState({
     user: null,
     tokens: null,

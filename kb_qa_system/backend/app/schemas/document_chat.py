@@ -24,6 +24,7 @@ class DocumentChatRequest(BaseModel):
     """文档对话提问请求"""
     session_id: str = Field(..., description="文档对话会话ID")
     question: str = Field(..., min_length=1, max_length=2000, description="问题内容")
+    conversation_id: Optional[int] = Field(None, description="对话ID（首次提问可不传，后端自动创建）")
 
 
 class DocumentFromLibraryRequest(BaseModel):

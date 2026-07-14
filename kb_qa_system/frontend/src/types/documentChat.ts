@@ -28,6 +28,14 @@ export interface DocumentChatRequest {
   session_id: string;
   /** 问题内容 */
   question: string;
+  /**
+   * 对话ID（可选）
+   *
+   * 作用：
+   *   首次提问不传，后端自动创建 Conversation 并在 done 事件返回 conversation_id；
+   *   后续追问传入该 ID，使多轮问答归属于同一对话记录（在侧边栏对话历史中显示）。
+   */
+  conversation_id?: number;
 }
 
 /** 文档对话消息（前端展示用） */

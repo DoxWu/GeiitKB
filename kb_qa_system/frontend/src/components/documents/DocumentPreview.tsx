@@ -80,6 +80,8 @@ export function DocumentPreview() {
   // PDF blob URL（通过 apiClient.getBlob 获取，带 Token 鉴权）
   // 作用：iframe 无法设置 Authorization header，需先 fetch 为 Blob 再创建 Object URL
   const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
+  // 修复问题2：标记预览内容是否为回退（原始文件丢失，使用数据库已处理内容）
+  const [previewFallback, setPreviewFallback] = useState(false);
 
   /** 加载文档内容预览
    * 作用：对文本类文件请求原始内容，对 PDF 使用 iframe（Blob URL），其他格式显示提示
@@ -89,6 +91,7 @@ export function DocumentPreview() {
     if (!isPreviewable(doc.file_type)) {
       setPreviewState("idle");
       setPreviewContent("");
+      setPreviewFallback(false);
       return;
     }
 
@@ -100,11 +103,24 @@ export function DocumentPreview() {
         const blob = await apiClient.getBlob(
           API_PATHS.DOCUMENT_DETAIL(doc.id) + "/content",
         );
-        // 释放旧的 Object URL 避免内存泄漏
-        setPdfBlobUrl((prev) => {
-          if (prev) URL.revokeObjectURL(prev);
-          return URL.createObjectURL(blob);
-        });
+        // 修复问题2：后端文件不存在时返回 document.content 作为 text/plain，
+        // 此时 blob.type 为 text/plain，需作为文本展示而非 iframe
+        if (blob.type.startsWith("text/")) {
+          const text = await blob.text();
+          setPreviewContent(text);
+          setPreviewFallback(true);
+          setPdfBlobUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return null;
+          });
+        } else {
+          // 正常 PDF 文件
+          setPdfBlobUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return URL.createObjectURL(blob);
+          });
+          setPreviewFallback(false);
+        }
         setPreviewState("success");
       } catch {
         setPreviewState("error");
@@ -115,6 +131,7 @@ export function DocumentPreview() {
     // 文本类文件：请求原始内容
     // 修复：改用 apiClient.getText() 替代原生 fetch，获得 Token 自动刷新和网络错误友好提示
     setPreviewState("loading");
+    setPreviewFallback(false);
     try {
       const text = await apiClient.getText(
         API_PATHS.DOCUMENT_DETAIL(doc.id) + "/content",
@@ -134,6 +151,7 @@ export function DocumentPreview() {
     } else {
       setPreviewContent("");
       setPreviewState("idle");
+      setPreviewFallback(false);
       // 释放 PDF Object URL 避免内存泄漏
       setPdfBlobUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
@@ -323,12 +341,26 @@ export function DocumentPreview() {
                 )}
 
                 {/* PDF iframe 预览（使用 Blob URL，携带 Token 鉴权） */}
-                {previewState === "success" && isIframePreviewable(doc.file_type) && pdfBlobUrl && (
+                {/* 修复问题2：previewFallback=true 时原始文件丢失，改用文本展示 */}
+                {previewState === "success" && isIframePreviewable(doc.file_type) && pdfBlobUrl && !previewFallback && (
                   <iframe
                     src={pdfBlobUrl}
                     className="h-96 w-full border-0"
                     title={doc.file_name}
                   />
+                )}
+
+                {/* PDF 回退为文本展示（原始文件丢失，显示数据库已处理内容） */}
+                {previewState === "success" && isIframePreviewable(doc.file_type) && previewFallback && (
+                  <>
+                    <div className="flex items-center gap-1.5 border-b border-line bg-warning/10 px-3 py-2 text-xs text-warning">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                      <span>原始文件不可用，显示已处理的文本内容</span>
+                    </div>
+                    <pre className="max-h-96 overflow-auto p-3 text-xs leading-relaxed text-ink whitespace-pre-wrap break-words">
+                      {previewContent || "(空文件)"}
+                    </pre>
+                  </>
                 )}
 
                 {/* 文本类内容预览 */}

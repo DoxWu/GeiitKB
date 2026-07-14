@@ -80,6 +80,14 @@ export default function ChatPage() {
   // ===== 文档对话状态 =====
   /** 文档对话会话 ID（null 表示知识库问答模式） */
   const [docSessionId, setDocSessionId] = useState<string | null>(null);
+  /**
+   * 文档对话对应的数据库 Conversation ID
+   *
+   * 作用：
+   *   首次文档提问不传，后端创建 Conversation 后在 done 事件返回 conversation_id；
+   *   后续追问传入该 ID，使多轮问答归属同一对话记录，侧边栏可正确显示。
+   */
+  const [docConversationId, setDocConversationId] = useState<number | null>(null);
   /** 已上传的文件信息 */
   const [uploadedFile, setUploadedFile] =
     useState<DocumentChatUploadResponse | null>(null);
@@ -161,6 +169,7 @@ export default function ChatPage() {
     if (prevConversationIdRef.current !== conversationId) {
       setDocMessages([]);
       setDocSessionId(null);
+      setDocConversationId(null);
       setUploadedFile(null);
       setDocStreaming(false);
       setDocStreamingContent("");
@@ -239,6 +248,7 @@ export default function ChatPage() {
         setDocSessionId(response.session_id);
         setUploadedFile(response);
         setDocMessages([]);
+        setDocConversationId(null);
         setDocStreamingContent("");
 
         // 提示用户
@@ -270,6 +280,7 @@ export default function ChatPage() {
   const handleClearFile = useCallback(() => {
     docAbortRef.current?.abort();
     setDocSessionId(null);
+    setDocConversationId(null);
     setUploadedFile(null);
     // 不清空 docMessages：保留文档对话历史，仅退出文档对话模式
     setDocStreaming(false);
@@ -304,6 +315,7 @@ export default function ChatPage() {
         setDocSessionId(response.session_id);
         setUploadedFile(response);
         setDocMessages([]);
+        setDocConversationId(null);
         setDocStreamingContent("");
 
         // 提示用户
@@ -346,7 +358,13 @@ export default function ChatPage() {
 
       try {
         await documentChatApi.askDocumentStream(
-          { session_id: docSessionId, question },
+          {
+            session_id: docSessionId,
+            question,
+            // 传递 conversation_id 使多轮问答归属同一对话记录
+            // 首次提问为 null（不传），后端创建后通过 done 事件返回
+            conversation_id: docConversationId ?? undefined,
+          },
           {
             onChunk: (text) => {
               docStreamingContentRef.current += text;
@@ -363,6 +381,14 @@ export default function ChatPage() {
               setDocMessages((prev) => [...prev, aiMsg]);
               setDocStreamingContent("");
               docStreamingContentRef.current = "";
+
+              // 修复问题1：后端在 done 事件返回 conversation_id，
+              // 保存以便后续追问归属同一对话，并刷新侧边栏对话列表
+              if (data.conversation_id) {
+                setDocConversationId(data.conversation_id);
+                // 刷新侧边栏，使新创建的文档对话记录立即显示
+                loadConversations();
+              }
             },
             onError: (msg) => {
               toastError("文档对话失败", msg);
@@ -380,6 +406,10 @@ export default function ChatPage() {
                 setDocMessages((prev) => [...prev, aiMsg]);
                 setDocStreamingContent("");
                 docStreamingContentRef.current = "";
+              }
+              // 错误时也刷新侧边栏（后端可能已保存部分内容到数据库）
+              if (docConversationId || partialContent) {
+                loadConversations();
               }
             },
           },
@@ -409,7 +439,7 @@ export default function ChatPage() {
         docAbortRef.current = null;
       }
     },
-    [docSessionId, apiError, toastError],
+    [docSessionId, docConversationId, apiError, toastError, loadConversations],
   );
 
   /** 文档对话停止生成 */

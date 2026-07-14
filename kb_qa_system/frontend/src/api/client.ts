@@ -268,7 +268,13 @@ export interface StreamCallbacks {
   /** 收到 chunk 事件（文本增量） */
   onChunk?: (text: string) => void;
   /** 收到 done 事件（流结束，携带完整回答） */
-  onDone?: (data: { content: string; metrics?: unknown; degraded?: boolean }) => void;
+  onDone?: (data: {
+    content: string;
+    metrics?: unknown;
+    degraded?: boolean;
+    /** 对话ID（文档对话后端在 done 事件中返回，用于刷新侧边栏对话列表） */
+    conversation_id?: number;
+  }) => void;
   /** 收到 error 事件 */
   onError?: (message: string) => void;
 }
@@ -642,6 +648,7 @@ export const apiClient: ApiClient = {
                   content: data.content || "",
                   metrics: data.metrics,
                   degraded: data.degraded,
+                  conversation_id: data.conversation_id,
                 });
                 break;
               case "error":

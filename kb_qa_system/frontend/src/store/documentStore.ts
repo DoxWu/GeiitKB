@@ -161,6 +161,16 @@ interface DocumentState {
 
   /** 清除错误 */
   clearError: () => void;
+
+  /**
+   * 重置 Store 到初始状态
+   *
+   * 作用：
+   *   在用户登出/切换账户时调用，清除所有用户特定的文档数据（分支、文档列表、预览、多选等），
+   *   防止前一个用户的数据残留到下一个用户的会话中。
+   *   注意：不清除 searchHistory（localStorage 持久化，非用户特定）。
+   */
+  reset: () => void;
 }
 
 /**
@@ -636,4 +646,32 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   },
 
   clearError: () => set({ error: null }),
+
+  reset: () => {
+    // 停止所有轮询，避免轮询回调写入已重置的状态
+    stopAllDocumentPolls();
+    set({
+      // 分支状态
+      folders: [],
+      currentFolderId: null,
+      foldersLoading: false,
+      currentScope: "accessible",
+      // 文档列表
+      documents: [],
+      total: 0,
+      page: 1,
+      loading: false,
+      error: null,
+      // 搜索与排序
+      searchKeyword: "",
+      sortBy: DEFAULT_SORT_FIELD,
+      sortOrder: DEFAULT_SORT_ORDER,
+      // 预览
+      previewDocument: null,
+      previewOpen: false,
+      // 多选
+      selectedDocIds: new Set<number>(),
+      selectionMode: false,
+    });
+  },
 }));

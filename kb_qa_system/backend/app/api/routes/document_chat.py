@@ -19,11 +19,12 @@ import os
 import uuid
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import update
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
@@ -34,6 +35,7 @@ from app.core.redis import RedisManager
 from app.api.deps import get_current_regular_user
 from app.models.user import User
 from app.models.document import Document
+from app.models.conversation import Conversation, Message
 from app.schemas.document_chat import (
     DocumentChatUploadResponse,
     DocumentChatRequest,
@@ -476,6 +478,7 @@ async def select_document_from_library(
 )
 async def ask_document_stream(
     request_data: DocumentChatRequest,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_regular_user),
 ) -> StreamingResponse:
     """
@@ -485,15 +488,18 @@ async def ask_document_stream(
         基于上传的文档内容，流式返回 AI 的回答。
         使用 SSE（Server-Sent Events）协议，实现打字机效果。
         支持多轮对话，历史记录存储在 Redis 中。
+        修复问题1：对话记录同步持久化到数据库 conversation/message 表，在侧边栏对话历史中显示。
 
     实现方式：
         1. 从 Redis 获取文档内容（不存在返回 404）
-        2. 构造系统提示词（包含文档全文）
-        3. 获取对话历史（从 Redis）
-        4. 构造 LangChain 消息列表
-        5. 调用 LLM 流式接口
-        6. 通过 SSE 返回数据块
-        7. 流结束后保存对话历史
+        2. 创建或获取 Conversation（首次提问自动创建，标题为"📄 文件名"）
+        3. 保存用户问题到数据库 Message 表
+        4. 构造系统提示词（包含文档全文）
+        5. 获取对话历史（从 Redis）
+        6. 构造 LangChain 消息列表
+        7. 调用 LLM 流式接口
+        8. 通过 SSE 返回数据块
+        9. 流结束后保存对话历史到 Redis + 保存 AI 回答到数据库
 
     请求体：
         {
@@ -572,10 +578,42 @@ async def ask_document_stream(
     # 当前问题
     messages.append(HumanMessage(content=request_data.question))
 
-    # 5. 流式调用 LLM 并通过 SSE 返回
+    # 5. 创建或获取 Conversation + 保存用户问题到数据库
+    # 修复问题1：将文档对话持久化到数据库 conversation/message 表，在侧边栏对话历史中显示
+    file_name = session_data.get("file_name", "文档对话")
+    conversation = None
+    if request_data.conversation_id:
+        # 尝试获取已有对话（校验归属和活跃状态）
+        conversation = db.query(Conversation).filter(
+            Conversation.id == request_data.conversation_id,
+            Conversation.user_id == current_user.id,
+            Conversation.is_active == True,
+        ).first()
+
+    if not conversation:
+        # 首次提问，自动创建对话
+        conversation = Conversation(
+            user_id=current_user.id,
+            title=f"📄 {file_name}",
+        )
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+
+    # 保存用户问题到 Message 表
+    user_message = Message(
+        conversation_id=conversation.id,
+        role="user",
+        content=request_data.question,
+    )
+    db.add(user_message)
+    db.commit()
+
+    # 6. 流式调用 LLM 并通过 SSE 返回
     # 捕获纯值，避免在生成器中依赖请求作用域对象
     question_text = request_data.question
     session_id_val = request_data.session_id
+    conv_id = conversation.id
 
     async def event_stream():
         """
@@ -583,14 +621,15 @@ async def ask_document_stream(
 
         作用：
             调用 LLM 流式接口，将文本块转为 SSE 格式发送给前端。
-            流结束后将本轮问答保存到 Redis 历史记录中。
+            流结束后将本轮问答保存到 Redis 历史记录 + 数据库 Message 表。
 
         实现方式：
             - 调用 llm_service.astream(messages) 获取流式响应
             - 每个 chunk 包装为 SSE 事件
             - 累积完整回答
-            - 流结束后保存历史记录
-            - 异常时发送脱敏错误事件
+            - 流结束后保存历史记录（Redis + 数据库）
+            - done 事件携带 conversation_id 供前端刷新侧边栏
+            - 异常时保存部分内容到 Redis + 数据库，发送脱敏错误事件
         """
         full_answer = ""
 
@@ -609,15 +648,15 @@ async def ask_document_stream(
                 }
                 yield f"data: {json.dumps(sse_data, ensure_ascii=False)}\n\n"
 
-            # 发送完成事件
+            # 发送完成事件（携带 conversation_id 供前端刷新侧边栏）
             done_data = {
                 "type": "done",
                 "content": full_answer,
+                "conversation_id": conv_id,
             }
             yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
 
-            # 保存对话历史到 Redis
-            # 作用：追加本轮问答，支持多轮追问
+            # 保存对话历史到 Redis（支持多轮追问的 LLM 上下文）
             _save_history(
                 history_key,
                 history,
@@ -625,14 +664,34 @@ async def ask_document_stream(
                 full_answer,
             )
 
+            # 保存 AI 回答到数据库 Message 表（使用独立 session 避免 StreamingResponse session 失效）
+            from app.core.database import SessionLocal as _SessionLocal
+            post_db = _SessionLocal()
+            try:
+                assistant_message = Message(
+                    conversation_id=conv_id,
+                    role="assistant",
+                    content=full_answer,
+                )
+                post_db.add(assistant_message)
+                # 原子递增 turn_count
+                post_db.execute(
+                    update(Conversation)
+                    .where(Conversation.id == conv_id)
+                    .values(turn_count=Conversation.turn_count + 1)
+                    .execution_options(synchronize_session=False)
+                )
+                post_db.commit()
+            finally:
+                post_db.close()
+
         except LLMServiceError:
             # LLM 服务不可用，发送脱敏错误事件
             logger.error(
                 f"文档对话 LLM 调用失败: session_id={session_id_val}",
                 exc_info=True,
             )
-            # 修复问题3：保存已生成的部分内容到历史记录，
-            # 支持多轮追问时 LLM 知道之前生成了什么（用户可说"继续"）
+            # 保存部分内容到 Redis 历史 + 数据库
             if full_answer:
                 _save_history(
                     history_key,
@@ -640,6 +699,28 @@ async def ask_document_stream(
                     question_text,
                     full_answer,
                 )
+                from app.core.database import SessionLocal as _ErrSessionLocal
+                err_db = _ErrSessionLocal()
+                try:
+                    partial_message = Message(
+                        conversation_id=conv_id,
+                        role="assistant",
+                        content=full_answer,
+                        is_degraded=True,
+                        degrade_reason="stream_error",
+                    )
+                    err_db.add(partial_message)
+                    err_db.execute(
+                        update(Conversation)
+                        .where(Conversation.id == conv_id)
+                        .values(turn_count=Conversation.turn_count + 1)
+                        .execution_options(synchronize_session=False)
+                    )
+                    err_db.commit()
+                except Exception:
+                    pass  # 保存部分回答失败不影响错误事件发送
+                finally:
+                    err_db.close()
             error_data = {
                 "type": "error",
                 "content": "抱歉，AI 服务暂时不可用，请稍后重试",
@@ -651,7 +732,7 @@ async def ask_document_stream(
             logger.exception(
                 f"文档对话流式处理异常: session_id={session_id_val}"
             )
-            # 修复问题3：保存已生成的部分内容到历史记录
+            # 保存部分内容到 Redis 历史 + 数据库
             if full_answer:
                 _save_history(
                     history_key,
@@ -659,6 +740,28 @@ async def ask_document_stream(
                     question_text,
                     full_answer,
                 )
+                from app.core.database import SessionLocal as _ErrSessionLocal2
+                err_db = _ErrSessionLocal2()
+                try:
+                    partial_message = Message(
+                        conversation_id=conv_id,
+                        role="assistant",
+                        content=full_answer,
+                        is_degraded=True,
+                        degrade_reason="stream_error",
+                    )
+                    err_db.add(partial_message)
+                    err_db.execute(
+                        update(Conversation)
+                        .where(Conversation.id == conv_id)
+                        .values(turn_count=Conversation.turn_count + 1)
+                        .execution_options(synchronize_session=False)
+                    )
+                    err_db.commit()
+                except Exception:
+                    pass
+                finally:
+                    err_db.close()
             error_data = {
                 "type": "error",
                 "content": "抱歉，回答生成过程中出现错误，请稍后重试",
