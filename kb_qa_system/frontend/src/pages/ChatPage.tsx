@@ -411,11 +411,11 @@ export default function ChatPage() {
       >
         {sidebarOpen && (
           <div
-            className="absolute inset-0 bg-black/20 lg:hidden"
+            className="absolute inset-0 bg-black/40 lg:hidden"
             onClick={() => setSidebarOpen(false)}
           />
         )}
-        <div className="relative h-full">
+        <div className="relative h-full w-60">
           <ChatSidebar onCollapse={() => setSidebarOpen(false)} />
         </div>
       </div>
