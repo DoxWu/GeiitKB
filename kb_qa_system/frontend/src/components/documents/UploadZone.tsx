@@ -255,7 +255,7 @@ export function UploadZone({ folderId, scope, compact = false }: UploadZoneProps
   /** 处理文件选择 */
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files || []);
-    files.forEach(uploadFile);
+    files.forEach((file) => uploadFile(file));
     // 重置 input 以支持重复选择同一文件
     e.target.value = "";
   }
@@ -265,7 +265,7 @@ export function UploadZone({ folderId, scope, compact = false }: UploadZoneProps
     e.preventDefault();
     setDragOver(false);
     const files = Array.from(e.dataTransfer.files);
-    files.forEach(uploadFile);
+    files.forEach((file) => uploadFile(file));
   }
 
   return (
@@ -386,7 +386,7 @@ function ConflictDialog({
   onCancel: () => void;
 }) {
   if (!conflict) {
-    return <Modal open={open} onClose={onCancel} title="文件内容冲突" />;
+    return <Modal open={open} onClose={onCancel} title="文件内容冲突">{null}</Modal>;
   }
 
   const options: {
