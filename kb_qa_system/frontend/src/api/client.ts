@@ -611,6 +611,48 @@ export const apiClient: ApiClient = {
     // 缓冲区：累积未解析完的数据，按 `\n\n` 分割 SSE 事件
     let buffer = "";
 
+    /**
+     * 解析并分发单个 SSE 事件
+     *
+     * 作用：
+     *   提取 `data:` 行后的 JSON，按 type 字段触发对应回调。
+     *   提取为独立函数，使 while 循环内和流结束后的残留处理共用同一逻辑。
+     */
+    const processEvent = (event: string): void => {
+      const line = event.trim();
+      if (!line || !line.startsWith("data:")) return;
+
+      // 提取 data: 后的 JSON 内容
+      const jsonStr = line.slice(5).trim();
+      if (!jsonStr) return;
+
+      try {
+        const data = JSON.parse(jsonStr);
+        // 根据 type 字段触发对应回调
+        switch (data.type) {
+          case "sources":
+            callbacks.onSources?.(data.content || []);
+            break;
+          case "chunk":
+            callbacks.onChunk?.(data.content || "");
+            break;
+          case "done":
+            callbacks.onDone?.({
+              content: data.content || "",
+              metrics: data.metrics,
+              degraded: data.degraded,
+              conversation_id: data.conversation_id,
+            });
+            break;
+          case "error":
+            callbacks.onError?.(data.content || "未知错误");
+            break;
+        }
+      } catch {
+        // JSON 解析失败：跳过该事件（不影响后续处理）
+      }
+    };
+
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -626,38 +668,30 @@ export const apiClient: ApiClient = {
 
         // 处理每个完整事件
         for (const event of events) {
-          const line = event.trim();
-          if (!line || !line.startsWith("data:")) continue;
+          processEvent(event);
+        }
+      }
 
-          // 提取 data: 后的 JSON 内容
-          const jsonStr = line.slice(5).trim();
-          if (!jsonStr) continue;
-
-          try {
-            const data = JSON.parse(jsonStr);
-            // 根据 type 字段触发对应回调
-            switch (data.type) {
-              case "sources":
-                callbacks.onSources?.(data.content || []);
-                break;
-              case "chunk":
-                callbacks.onChunk?.(data.content || "");
-                break;
-              case "done":
-                callbacks.onDone?.({
-                  content: data.content || "",
-                  metrics: data.metrics,
-                  degraded: data.degraded,
-                  conversation_id: data.conversation_id,
-                });
-                break;
-              case "error":
-                callbacks.onError?.(data.content || "未知错误");
-                break;
-            }
-          } catch {
-            // JSON 解析失败：跳过该事件（不影响后续处理）
-          }
+      // 修复：流结束后处理 buffer 中残留的最后一个 SSE 事件
+      //
+      // 问题根因：
+      //   当 done 事件是最后一个 SSE 事件时，如果 `\n\n` 分隔符和事件数据
+      //   跨在不同的 reader.read() 中（网络分块），或流在事件发送后立即关闭，
+      //   done 事件可能残留在 buffer 中不被 split("\n\n") 处理，
+      //   导致 onDone 回调不触发 → loadConversations() 不被调用 → 侧边栏不刷新。
+      //
+      // 修复方式：
+      //   流结束时刷新 decoder（获取未完成的 UTF-8 尾字符），
+      //   并强制处理 buffer 中残留的事件数据。
+      if (buffer.trim()) {
+        const tail = decoder.decode();
+        if (tail) {
+          buffer += tail;
+        }
+        // 残留数据可能包含一个或多个以 \n\n 分隔的事件，也可能是不完整的单事件
+        const tailEvents = buffer.split("\n\n");
+        for (const event of tailEvents) {
+          processEvent(event);
         }
       }
     } finally {

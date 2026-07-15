@@ -382,13 +382,15 @@ export default function ChatPage() {
               setDocStreamingContent("");
               docStreamingContentRef.current = "";
 
-              // 修复问题1：后端在 done 事件返回 conversation_id，
-              // 保存以便后续追问归属同一对话，并刷新侧边栏对话列表
+              // 保存 conversation_id 以便后续追问归属同一对话
               if (data.conversation_id) {
                 setDocConversationId(data.conversation_id);
-                // 刷新侧边栏，使新创建的文档对话记录立即显示
-                loadConversations();
               }
+              // 修复：总是刷新侧边栏对话列表
+              // 后端在请求处理阶段（非生成器内）已创建 Conversation 并 commit，
+              // 无论 done 事件是否携带 conversation_id，数据库中都已存在会话记录，
+              // 必须刷新侧边栏使其立即显示。
+              loadConversations();
             },
             onError: (msg) => {
               toastError("文档对话失败", msg);
@@ -407,10 +409,11 @@ export default function ChatPage() {
                 setDocStreamingContent("");
                 docStreamingContentRef.current = "";
               }
-              // 错误时也刷新侧边栏（后端可能已保存部分内容到数据库）
-              if (docConversationId || partialContent) {
-                loadConversations();
-              }
+              // 修复：错误时也总是刷新侧边栏
+              // 后端在请求处理阶段已创建 Conversation + 保存用户消息并 commit，
+              // 即使 LLM 调用失败（发送 error 事件），数据库中也有会话记录，
+              // 必须刷新侧边栏使其显示。
+              loadConversations();
             },
           },
           controller.signal,
