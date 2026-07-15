@@ -96,9 +96,11 @@ class Document(Base):
     file_size: Mapped[int] = mapped_column(Integer)
 
     # 文件哈希（SHA256）
-    # 作用：文件去重，相同文件不重复存储和向量化
+    # 作用：文件去重辅助字段。去重逻辑在应用层实现（仅检查 is_deleted=False 的活跃文档），
+    #       不再使用 DB 唯一约束，避免软删除后无法重新上传相同内容的文件。
+    #       并发安全由 Redis 分布式锁（upload:hash:{file_hash}）保证。
     file_hash: Mapped[Optional[str]] = mapped_column(
-        String(64), unique=True, index=True, nullable=True
+        String(64), index=True, nullable=True
     )
 
     # 文档全文内容（可选，存储解析后的文本，用于全文搜索）

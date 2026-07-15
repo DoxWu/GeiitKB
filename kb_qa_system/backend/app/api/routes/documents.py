@@ -22,6 +22,7 @@
 import os
 import uuid
 import logging
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Path, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.orm import Session
@@ -99,6 +100,76 @@ def _audit_superuser_action(
 # 上传文档
 # ============================================
 
+def _generate_unique_title(base_title: str, user_id: int, db: Session) -> str:
+    """
+    生成不与当前用户活跃文档标题冲突的唯一标题
+
+    作用：
+        当冲突处理策略为 rename 时，为文档生成一个不重复的显示标题。
+        在原标题后追加 " (1)"、" (2)" 等序号，直到找到未占用的标题。
+
+    参数：
+        - base_title: 原始标题（通常是文件名或用户指定的 title）
+        - user_id: 当前用户ID（标题唯一性仅在用户范围内校验）
+        - db: 数据库会话
+
+    返回：
+        不与当前用户活跃文档标题冲突的唯一标题
+    """
+    existing_titles = set(
+        row[0] for row in db.query(Document.title).filter(
+            Document.user_id == user_id,
+            Document.is_deleted == False,
+        ).all()
+    )
+    if base_title not in existing_titles:
+        return base_title
+    counter = 1
+    while True:
+        candidate = f"{base_title} ({counter})"
+        if candidate not in existing_titles:
+            return candidate
+        counter += 1
+
+
+def _generate_unique_filename(base_filename: str, user_id: int, db: Session) -> str:
+    """
+    生成不与当前用户活跃文档文件名冲突的唯一文件名
+
+    作用：
+        当冲突处理策略为 rename 时，为文档生成一个不重复的原始文件名。
+        在扩展名前追加 " (1)"、" (2)" 等序号，如 "report.pdf" → "report (1).pdf"。
+
+    参数：
+        - base_filename: 原始文件名
+        - user_id: 当前用户ID
+        - db: 数据库会话
+
+    返回：
+        不与当前用户活跃文档文件名冲突的唯一文件名
+    """
+    existing_names = set(
+        row[0] for row in db.query(Document.file_name).filter(
+            Document.user_id == user_id,
+            Document.is_deleted == False,
+        ).all()
+    )
+    if base_filename not in existing_names:
+        return base_filename
+    # 分离扩展名
+    dot_idx = base_filename.rfind(".")
+    if dot_idx > 0:
+        stem, ext = base_filename[:dot_idx], base_filename[dot_idx:]
+    else:
+        stem, ext = base_filename, ""
+    counter = 1
+    while True:
+        candidate = f"{stem} ({counter}){ext}"
+        if candidate not in existing_names:
+            return candidate
+        counter += 1
+
+
 @router.post(
     "/upload",
     response_model=DocumentResponse,
@@ -124,6 +195,17 @@ async def upload_document(
     folder_id: Optional[int] = Form(
         None, ge=0,
         description="所属分支ID（≥1 指定分支；0 或不传表示未分类）"
+    ),
+    # 文档重名/重传修复：冲突处理策略
+    # 作用：当检测到与当前用户某篇活跃文档内容相同时（file_hash 命中），
+    #       根据此参数决定处理方式，避免直接 409 拒绝导致业务中断。
+    #   - None：返回 409 FILE_HASH_CONFLICT，附带冲突详情供前端展示选择
+    #   - rename：自动重命名（追加序号后缀）后作为新文档上传
+    #   - overwrite：软删除冲突的旧文档及其向量分块，再上传新文档
+    #   - keep_both：跳过去重，直接作为新文档上传（保留两者）
+    conflict_resolution: Optional[str] = Form(
+        None,
+        description="冲突处理：rename(自动重命名) / overwrite(覆盖旧文档) / keep_both(保留两者)"
     ),
     db: Session = Depends(get_db),
     # 任务5：上传接口限制为正式用户，guest 用户返回 403
@@ -160,8 +242,21 @@ async def upload_document(
 
     错误：
         400: 文件类型不支持或文件过大
-        409: 文件已存在（哈希去重）
+        409: 文件内容与现有活跃文档重复（FILE_HASH_CONFLICT，附带冲突详情）
     """
+    # 0. 校验冲突处理参数（提前拒绝非法值，避免后续逻辑误用）
+    VALID_RESOLUTIONS = {"rename", "overwrite", "keep_both"}
+    if conflict_resolution is not None and conflict_resolution not in VALID_RESOLUTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": {
+                    "code": "INVALID_CONFLICT_RESOLUTION",
+                    "message": f"无效的冲突处理策略: {conflict_resolution}，可选: rename / overwrite / keep_both",
+                }
+            },
+        )
+
     # 1. 验证文件类型（白名单校验）
     # 作用：防止上传可执行文件等危险类型
     file_type = document_processor.get_file_type(file.filename)
@@ -269,14 +364,24 @@ async def upload_document(
 
     # M-2 修复：try 块覆盖"检查去重 → 创建记录 → DB 插入"全程，finally 释放锁
     try:
+        # 文档重名/重传修复：仅检查当前用户的活跃文档（is_deleted=False），
+        # 软删除的文档不再阻塞重新上传。根据 conflict_resolution 处理冲突。
+        existing = None
         if file_hash:
             existing = db.query(Document).filter(
                 Document.file_hash == file_hash,
                 Document.is_deleted == False,
                 Document.user_id == current_user.id,
             ).first()
-            if existing:
-                # 删除刚上传的重复文件
+
+        if existing:
+            if conflict_resolution is None:
+                # 默认行为：返回冲突详情，由前端展示选择
+                suggested_name = _generate_unique_title(
+                    title if title else safe_filename,
+                    current_user.id, db,
+                )
+                # 删除刚上传的临时文件（冲突未解决，不保留）
                 try:
                     os.remove(file_path)
                 except Exception:
@@ -285,15 +390,52 @@ async def upload_document(
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
                         "error": {
-                            "code": "FILE_ALREADY_EXISTS",
-                            "message": f"文件已存在，文档ID: {existing.id}",
-                            "document_id": existing.id
+                            "code": "FILE_HASH_CONFLICT",
+                            "message": f"文件内容与现有文档「{existing.title}」相同",
+                            "document_id": existing.id,
+                            "existing_title": existing.title,
+                            "suggested_name": suggested_name,
+                            "available_resolutions": ["rename", "overwrite", "keep_both"],
                         }
                     },
+                )
+            elif conflict_resolution == "rename":
+                # 自动重命名：生成不冲突的标题和文件名后正常上传
+                logger.info(
+                    f"冲突处理=rename: doc_id={existing.id}, user_id={current_user.id}"
+                )
+                # 重命名在下方创建记录时应用（修改 doc_title/safe_filename）
+                pass
+            elif conflict_resolution == "overwrite":
+                # 覆盖：软删除冲突的旧文档及其向量分块，再上传新文档
+                logger.info(
+                    f"冲突处理=overwrite: 软删除旧文档 doc_id={existing.id}, user_id={current_user.id}"
+                )
+                existing.is_deleted = True
+                existing.deleted_at = datetime.now()
+                existing.status = "deleted"
+                db.commit()
+                # 删除旧文档的向量分块（best-effort，失败不影响主流程）
+                try:
+                    from app.services.vector_store import get_vector_store
+                    vector_store = get_vector_store()
+                    vector_store.delete_document_chunks(existing.id)
+                except Exception as e:
+                    logger.warning(
+                        f"覆盖上传时删除旧向量分块失败（doc_id={existing.id}），待定时任务清理: {e}"
+                    )
+            elif conflict_resolution == "keep_both":
+                # 保留两者：跳过去重，直接作为新文档上传
+                logger.info(
+                    f"冲突处理=keep_both: 保留两者, user_id={current_user.id}"
                 )
 
         # 6. 创建数据库记录
         doc_title = title if title else safe_filename
+        # 冲突处理=rename 时生成唯一标题和文件名
+        if existing and conflict_resolution == "rename":
+            doc_title = _generate_unique_title(doc_title, current_user.id, db)
+            safe_filename = _generate_unique_filename(safe_filename, current_user.id, db)
         tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()] if tags else []
 
         # 校验可见性（普通用户请求 public 会被降级为 private）
@@ -337,21 +479,21 @@ async def upload_document(
             metadata_={"category": category, "tags": tag_list} if tag_list else None,
         )
 
-        # 捕获 IntegrityError（并发上传同名/同哈希时的竞态条件）
+        # file_hash 唯一约束已移除（迁移 20260715_0006），IntegrityError 不再因哈希冲突触发。
+        # 保留兜底处理以防其他唯一约束（如未来扩展）冲突。
         try:
             db.add(db_document)
             db.commit()
             db.refresh(db_document)
         except IntegrityError:
             db.rollback()
-            # 清理已写入的文件
             try:
                 os.remove(file_path)
             except Exception:
                 pass
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail={"error": {"code": "FILE_ALREADY_EXISTS", "message": "文件已存在"}},
+                detail={"error": {"code": "FILE_ALREADY_EXISTS", "message": "文档记录冲突，请重试"}},
             )
     finally:
         # M-2 修复：无论成功失败，释放上传去重锁

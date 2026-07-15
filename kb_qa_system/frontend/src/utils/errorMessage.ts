@@ -141,6 +141,7 @@ export function formatApiError(
  * 后端 detail 可能是：
  *   - 字符串：直接返回（如 "Document not found"）
  *   - 数组：Pydantic 校验错误，格式为 [{msg, type, loc}]
+ *   - 对象：业务错误，格式为 {"error": {"code", "message", ...}}
  *
  * @param detail - ApiError.detail 字段
  * @returns 可读的错误描述字符串，无内容时返回 undefined
@@ -164,6 +165,15 @@ function extractDetail(detail: ApiError["detail"]): string | undefined {
       return field ? `${field}: ${msg}` : msg;
     });
     return parts.join("；") || undefined;
+  }
+
+  // 对象类型：业务错误 {"error": {"code", "message", ...}}
+  // 作用：后端统一错误格式，提取 message 字段作为可读描述
+  if (typeof detail === "object" && detail !== null && !Array.isArray(detail)) {
+    const errObj = (detail as { error?: { message?: string; code?: string } }).error;
+    if (errObj?.message) {
+      return errObj.message;
+    }
   }
 
   return undefined;

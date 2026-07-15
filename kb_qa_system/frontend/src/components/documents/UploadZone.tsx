@@ -11,14 +11,15 @@
  */
 
 import { useState, useRef, useCallback } from "react";
-import { UploadCloud, File as FileIcon, X } from "lucide-react";
-import { Button } from "@/components/common";
+import { UploadCloud, File as FileIcon, X, Copy, RefreshCw, Layers } from "lucide-react";
+import { Button, Modal } from "@/components/common";
 import { useDocumentStore } from "@/store/documentStore";
 import { useToastStore } from "@/store/toastStore";
 import { SUPPORTED_FILE_TYPES, MAX_FILE_SIZE } from "@/utils/constants";
 import { formatFileSize } from "@/utils/format";
+import { HttpClientError } from "@/api/client";
 import { cn } from "@/lib/utils";
-import type { DocumentScope, DocumentVisibility } from "@/types/document";
+import type { DocumentScope, DocumentVisibility, ConflictResolution } from "@/types/document";
 
 /** 上传中的文件状态 */
 interface UploadingFile {
@@ -32,6 +33,18 @@ interface UploadingFile {
   status: "uploading" | "success" | "error" | "cancelled";
   /** 错误信息 */
   error?: string;
+}
+
+/** 文件内容冲突信息（后端返回 FILE_HASH_CONFLICT 时填充） */
+interface ConflictInfo {
+  /** 触发冲突的文件对象 */
+  file: File;
+  /** 冲突的现有文档标题 */
+  existingTitle: string;
+  /** 后端建议的新名称 */
+  suggestedName: string;
+  /** 冲突的现有文档ID */
+  documentId: number;
 }
 
 /** UploadZone 组件属性 */
@@ -55,6 +68,9 @@ export function UploadZone({ folderId, scope, compact = false }: UploadZoneProps
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([]);
+  // 文档重名/重传修复：内容冲突对话框状态
+  const [conflict, setConflict] = useState<ConflictInfo | null>(null);
+  const [resolving, setResolving] = useState(false);
 
   // 存储每个文件上传对应的 AbortController，用于取消上传
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -94,9 +110,19 @@ export function UploadZone({ folderId, scope, compact = false }: UploadZoneProps
     );
   }, []);
 
-  /** 上传单个文件 */
+  /**
+   * 上传单个文件
+   *
+   * 文档重名/重传修复：
+   *   - 首次上传（不传 conflictResolution）：若后端返回 409 FILE_HASH_CONFLICT，
+   *     弹出冲突对话框供用户选择处理方式（重命名 / 覆盖 / 保留两者）。
+   *   - 冲突解决重传（传 conflictResolution）：携带策略重新上传，不再弹窗。
+   *
+   * @param file - 要上传的文件
+   * @param conflictResolution - 冲突处理策略（仅冲突解决重传时传入）
+   */
   const uploadFile = useCallback(
-    async (file: File) => {
+    async (file: File, conflictResolution?: ConflictResolution) => {
       const validationError = validateFile(file);
       if (validationError) {
         toast.error("文件校验失败", validationError);
@@ -130,6 +156,7 @@ export function UploadZone({ folderId, scope, compact = false }: UploadZoneProps
             file,
             visibility,
             folder_id: folderId ?? undefined,
+            conflict_resolution: conflictResolution,
           },
           (percent) => {
             setUploadingFiles((prev) =>
@@ -151,6 +178,33 @@ export function UploadZone({ folderId, scope, compact = false }: UploadZoneProps
         // 如果是取消操作，不显示错误 toast（状态已在 cancelUpload 中更新）
         if (err instanceof Error && err.name === "AbortError") {
           return;
+        }
+        // 文档重名/重传修复：检测文件内容冲突（仅首次上传时弹窗）
+        if (
+          !conflictResolution &&
+          err instanceof HttpClientError &&
+          err.status === 409
+        ) {
+          const errorObj = err.detail as {
+            error?: {
+              code?: string;
+              document_id?: number;
+              existing_title?: string;
+              suggested_name?: string;
+            };
+          };
+          if (errorObj?.error?.code === "FILE_HASH_CONFLICT") {
+            // 弹出冲突对话框，不显示错误 toast
+            setConflict({
+              file,
+              existingTitle: errorObj.error.existing_title || file.name,
+              suggestedName: errorObj.error.suggested_name || `${file.name} (1)`,
+              documentId: errorObj.error.document_id || 0,
+            });
+            // 移除上传列表中的该项（本次上传已结束，待用户选择后重新上传）
+            setUploadingFiles((prev) => prev.filter((f) => f.name !== file.name));
+            return;
+          }
         }
         const errorMsg = err instanceof Error ? err.message : "上传失败";
         setUploadingFiles((prev) =>
@@ -174,6 +228,30 @@ export function UploadZone({ folderId, scope, compact = false }: UploadZoneProps
     [folderId, scope, uploadDocument, toast],
   );
 
+  /**
+   * 解决文件内容冲突
+   *
+   * 作用：
+   *   用户在冲突对话框中选择处理方式后，携带 conflict_resolution 重新上传。
+   *   重传期间禁用按钮（resolving 状态），完成后关闭对话框。
+   *
+   * @param resolution - 用户选择的冲突处理策略
+   */
+  const resolveConflict = useCallback(
+    async (resolution: ConflictResolution) => {
+      if (!conflict) return;
+      const conflictFile = conflict.file;
+      setResolving(true);
+      setConflict(null);
+      try {
+        await uploadFile(conflictFile, resolution);
+      } finally {
+        setResolving(false);
+      }
+    },
+    [conflict, uploadFile],
+  );
+
   /** 处理文件选择 */
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files || []);
@@ -190,88 +268,197 @@ export function UploadZone({ folderId, scope, compact = false }: UploadZoneProps
     files.forEach(uploadFile);
   }
 
-  // 紧凑模式（工具栏中的上传按钮）
-  if (compact) {
-    return (
-      <>
-        <Button
-          icon={<UploadCloud className="h-4 w-4" />}
-          onClick={() => fileInputRef.current?.click()}
-        >
-          上传文档
-        </Button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={handleFileSelect}
-          accept={SUPPORTED_FILE_TYPES.join(",")}
-        />
-        {/* 上传进度浮层 */}
-        {uploadingFiles.length > 0 && (
-          <UploadProgressList
-            files={uploadingFiles}
-            onCancel={cancelUpload}
+  return (
+    <>
+      {compact ? (
+        // 紧凑模式（工具栏中的上传按钮）
+        <>
+          <Button
+            icon={<UploadCloud className="h-4 w-4" />}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            上传文档
+          </Button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFileSelect}
+            accept={SUPPORTED_FILE_TYPES.join(",")}
           />
-        )}
-      </>
-    );
+          {/* 上传进度浮层 */}
+          {uploadingFiles.length > 0 && (
+            <UploadProgressList
+              files={uploadingFiles}
+              onCancel={cancelUpload}
+            />
+          )}
+        </>
+      ) : (
+        // 完整模式（拖拽上传区）
+        <div className="space-y-3">
+          {/* 拖拽上传区 */}
+          <div
+            onClick={() => fileInputRef.current?.click()}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+            className={cn(
+              "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed py-8 transition-colors",
+              dragOver
+                ? "border-brand bg-brand-light"
+                : "border-line bg-surface hover:border-brand hover:bg-muted/50",
+            )}
+          >
+            <UploadCloud
+              className={cn(
+                "h-8 w-8",
+                dragOver ? "text-brand" : "text-ink-tertiary",
+              )}
+            />
+            <div className="text-center">
+              <p className="text-sm font-medium text-ink">
+                点击上传或拖拽文件到此处
+              </p>
+              <p className="mt-0.5 text-xs text-ink-tertiary">
+                支持 {SUPPORTED_FILE_TYPES.join("、")}，单个文件最大{" "}
+                {formatFileSize(MAX_FILE_SIZE)}
+              </p>
+            </div>
+          </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleFileSelect}
+            accept={SUPPORTED_FILE_TYPES.join(",")}
+          />
+
+          {/* 上传进度列表 */}
+          {uploadingFiles.length > 0 && (
+            <UploadProgressList
+              files={uploadingFiles}
+              onCancel={cancelUpload}
+            />
+          )}
+        </div>
+      )}
+
+      {/* 文档重名/重传修复：文件内容冲突对话框 */}
+      <ConflictDialog
+        open={!!conflict}
+        conflict={conflict}
+        resolving={resolving}
+        onResolve={resolveConflict}
+        onCancel={() => setConflict(null)}
+      />
+    </>
+  );
+}
+
+/**
+ * 文件内容冲突对话框
+ *
+ * 作用：
+ *   当上传文件与现有活跃文档内容相同时（FILE_HASH_CONFLICT），
+ *   弹出此对话框供用户选择处理方式：
+ *   - 自动重命名（rename）：以新名称上传为独立文档
+ *   - 覆盖旧文档（overwrite）：软删除冲突文档后上传新文档
+ *   - 保留两者（keep_both）：直接上传，两份文档共存
+ */
+function ConflictDialog({
+  open,
+  conflict,
+  resolving,
+  onResolve,
+  onCancel,
+}: {
+  open: boolean;
+  conflict: ConflictInfo | null;
+  resolving: boolean;
+  onResolve: (resolution: ConflictResolution) => void;
+  onCancel: () => void;
+}) {
+  if (!conflict) {
+    return <Modal open={open} onClose={onCancel} title="文件内容冲突" />;
   }
 
-  // 完整模式（拖拽上传区）
+  const options: {
+    value: ConflictResolution;
+    label: string;
+    description: string;
+    icon: React.ReactNode;
+    danger?: boolean;
+  }[] = [
+    {
+      value: "rename",
+      label: "自动重命名",
+      description: `以「${conflict.suggestedName}」作为新文档上传，保留原文档`,
+      icon: <Copy className="h-4 w-4 text-brand" />,
+    },
+    {
+      value: "overwrite",
+      label: "覆盖旧文档",
+      description: `软删除「${conflict.existingTitle}」及其检索数据，上传新文档替代`,
+      icon: <RefreshCw className="h-4 w-4 text-warning" />,
+      danger: true,
+    },
+    {
+      value: "keep_both",
+      label: "保留两者",
+      description: "直接上传新文档，两份文档共存（内容相同）",
+      icon: <Layers className="h-4 w-4 text-ink-secondary" />,
+    },
+  ];
+
   return (
-    <div className="space-y-3">
-      {/* 拖拽上传区 */}
-      <div
-        onClick={() => fileInputRef.current?.click()}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragOver(true);
-        }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={handleDrop}
-        className={cn(
-          "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed py-8 transition-colors",
-          dragOver
-            ? "border-brand bg-brand-light"
-            : "border-line bg-surface hover:border-brand hover:bg-muted/50",
-        )}
-      >
-        <UploadCloud
-          className={cn(
-            "h-8 w-8",
-            dragOver ? "text-brand" : "text-ink-tertiary",
-          )}
-        />
-        <div className="text-center">
-          <p className="text-sm font-medium text-ink">
-            点击上传或拖拽文件到此处
-          </p>
-          <p className="mt-0.5 text-xs text-ink-tertiary">
-            支持 {SUPPORTED_FILE_TYPES.join("、")}，单个文件最大{" "}
-            {formatFileSize(MAX_FILE_SIZE)}
-          </p>
+    <Modal
+      open={open}
+      onClose={onCancel}
+      title="文件内容冲突"
+      disableBackdropClose={resolving}
+    >
+      <div className="space-y-3">
+        <p className="text-sm text-ink-secondary">
+          上传的文件「{conflict.file.name}」与现有文档「{conflict.existingTitle}」内容相同。请选择处理方式：
+        </p>
+        <div className="space-y-2">
+          {options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              disabled={resolving}
+              onClick={() => onResolve(option.value)}
+              className={cn(
+                "flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors",
+                "border-line bg-surface hover:border-brand hover:bg-muted/50",
+                "disabled:cursor-not-allowed disabled:opacity-50",
+                option.danger && "hover:border-warning",
+              )}
+            >
+              <span className="mt-0.5 shrink-0">{option.icon}</span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-ink">{option.label}</p>
+                <p className="mt-0.5 text-xs text-ink-tertiary">
+                  {option.description}
+                </p>
+              </div>
+            </button>
+          ))}
         </div>
       </div>
-
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={handleFileSelect}
-        accept={SUPPORTED_FILE_TYPES.join(",")}
-      />
-
-      {/* 上传进度列表 */}
-      {uploadingFiles.length > 0 && (
-        <UploadProgressList
-          files={uploadingFiles}
-          onCancel={cancelUpload}
-        />
-      )}
-    </div>
+      <div className="mt-4 flex justify-end">
+        <Button variant="ghost" onClick={onCancel} disabled={resolving}>
+          取消上传
+        </Button>
+      </div>
+    </Modal>
   );
 }
 

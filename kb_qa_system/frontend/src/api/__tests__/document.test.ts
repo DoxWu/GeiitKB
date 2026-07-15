@@ -236,6 +236,29 @@ describe("uploadDocument", () => {
     expect(formData.get("folder_id")).toBe("42");
   });
 
+  it("conflict_resolution 参数被正确附加到 FormData", async () => {
+    mockApiClient.upload.mockResolvedValueOnce({ id: 1 });
+
+    const file = new File(["content"], "dup.pdf");
+    await uploadDocument({
+      file,
+      conflict_resolution: "overwrite",
+    });
+
+    const formData = mockApiClient.upload.mock.calls[0][1] as FormData;
+    expect(formData.get("conflict_resolution")).toBe("overwrite");
+  });
+
+  it("不传 conflict_resolution 时不附加该字段到 FormData", async () => {
+    mockApiClient.upload.mockResolvedValueOnce({ id: 1 });
+
+    const file = new File(["content"], "plain.pdf");
+    await uploadDocument({ file });
+
+    const formData = mockApiClient.upload.mock.calls[0][1] as FormData;
+    expect(formData.get("conflict_resolution")).toBeNull();
+  });
+
   it("传递 onProgress 和 signal 到 upload", async () => {
     mockApiClient.upload.mockResolvedValueOnce({ id: 1 });
 

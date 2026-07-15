@@ -119,9 +119,10 @@ describe("UploadZone 组件", () => {
     });
     uploadFile(input, file);
 
-    // uploadDocument 现在接收 3 个参数：params、onProgress、signal
+    // uploadDocument 接收 3 个参数：params（含 visibility）、onProgress、signal
+    // 使用 objectContaining 避免冲突未触发时 conflict_resolution=undefined 的比较歧义
     expect(mockDocStore.uploadDocument).toHaveBeenCalledWith(
-      { file, folder_id: 5 },
+      expect.objectContaining({ file, folder_id: 5, visibility: "private" }),
       expect.any(Function),
       expect.any(AbortSignal),
     );

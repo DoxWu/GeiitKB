@@ -100,6 +100,9 @@ export interface DocumentQueryParams {
   scope?: DocumentScope;
 }
 
+/** 文档上传冲突处理策略（对齐后端 conflict_resolution 参数） */
+export type ConflictResolution = "rename" | "overwrite" | "keep_both";
+
 /** 上传文档参数（multipart/form-data） */
 export interface UploadDocumentParams {
   /** 文件对象 */
@@ -112,6 +115,14 @@ export interface UploadDocumentParams {
   visibility?: DocumentVisibility;
   /** 所属分支ID */
   folder_id?: number;
+  /**
+   * 冲突处理策略（文档重名/重传修复）
+   * - 不传：检测到内容冲突时返回 409，由前端展示选择
+   * - rename：自动重命名后作为新文档上传
+   * - overwrite：软删除冲突的旧文档后再上传
+   * - keep_both：跳过去重，保留两者
+   */
+  conflict_resolution?: ConflictResolution;
 }
 
 /** 任务状态响应（对齐后端 TaskStatusResponse Schema） */

@@ -212,6 +212,10 @@ export async function uploadDocument(
   if (params.folder_id !== undefined) {
     formData.append("folder_id", String(params.folder_id));
   }
+  // 文档重名/重传修复：传递冲突处理策略
+  if (params.conflict_resolution) {
+    formData.append("conflict_resolution", params.conflict_resolution);
+  }
 
   return apiClient.upload<DocumentResponse>(
     API_PATHS.DOCUMENT_UPLOAD,
