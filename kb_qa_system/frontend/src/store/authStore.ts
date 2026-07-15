@@ -83,6 +83,12 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       const tokenResponse = await authApi.login(data);
 
+      // 修复问题三：登录前清除前一个用户的文档数据，防止数据残留。
+      // 作用：覆盖 token 过期后直接登录新账户的场景（logout 未被调用，
+      //   documentStore 中仍残留前一个用户的 folders/documents）。
+      //   在设置新用户状态之前调用，确保新会话从干净状态开始。
+      useDocumentStore.getState().reset();
+
       // 持久化到 localStorage
       localStorage.setItem(
         TOKEN_STORAGE_KEY,
@@ -112,6 +118,9 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ loading: true, error: null });
     try {
       const tokenResponse = await authApi.guestLogin();
+
+      // 修复问题三：登录前清除前一个用户的文档数据（与 login 一致）
+      useDocumentStore.getState().reset();
 
       // 持久化到 localStorage（与 login 一致）
       localStorage.setItem(

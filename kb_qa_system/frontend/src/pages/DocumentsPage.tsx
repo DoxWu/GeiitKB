@@ -61,13 +61,17 @@ export default function DocumentsPage() {
   // URL 导入弹窗状态
   const [urlImportOpen, setUrlImportOpen] = useState(false);
 
-  // 页面加载时获取分支列表
-  // E3-03: 仅在挂载时执行一次。loadFolders 来自 zustand store，
-  // 引用稳定但 lint 无法识别；若加入依赖会导致重复请求。
+  // 加载分支列表
+  // 修复问题三：依赖 user?.id 确保账户切换时重新加载分支列表。
+  // 原实现 useEffect([]) 仅在挂载时执行，若 loadFolders 静默失败或
+  // 组件因 React 复用未重新挂载，用户切换账户后分支列表不会刷新。
+  // 依赖 user?.id：用户登录时 user 从 null → 有值，触发重新加载。
   useEffect(() => {
-    loadFolders();
+    if (user?.id) {
+      loadFolders();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [user?.id]);
 
   // URL folderId 变化时，同步选中分支并加载文档
   // E3-03: 仅依赖 URL 参数 folderId 变化触发。

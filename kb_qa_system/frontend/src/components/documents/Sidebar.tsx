@@ -48,7 +48,7 @@ interface SidebarProps {
 export function Sidebar({ onCollapse }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { folders, currentFolderId, currentScope, selectFolder, selectScope, foldersLoading } =
+  const { folders, currentFolderId, currentScope, selectFolder, selectScope, foldersLoading, loadFolders } =
     useDocumentStore();
   const { user, logout } = useAuthStore();
   const toast = useToastStore();
@@ -233,6 +233,14 @@ export function Sidebar({ onCollapse }: SidebarProps) {
             <div className="px-2 py-2 text-xs text-ink-tertiary">
               <FolderIcon className="mb-1 h-4 w-4" />
               暂无分支
+              {/* 修复问题三：添加刷新按钮，允许用户手动重试 loadFolders。
+                  若 loadFolders 因网络抖动等原因静默失败，用户可点击刷新重新加载。 */}
+              <button
+                onClick={() => loadFolders()}
+                className="ml-1 text-brand hover:text-brand-hover"
+              >
+                刷新
+              </button>
             </div>
           )}
         </div>

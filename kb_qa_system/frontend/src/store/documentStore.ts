@@ -336,6 +336,10 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       }
       set({ folders: response.items || [], foldersLoading: false });
     } catch (err) {
+      // 修复问题三：输出错误到控制台，便于排查 loadFolders 静默失败问题。
+      // 原实现仅设置 error 到 store，但 DocumentsPage 未解构 error 字段，
+      // 导致用户看不到加载失败信息，分支列表"莫名消失"。
+      console.error("[loadFolders] 加载分支失败:", err);
       set({
         foldersLoading: false,
         error: err instanceof Error ? err.message : "加载分支失败",
