@@ -655,14 +655,12 @@ def list_documents(
         query = query.filter(Document.visibility == VISIBILITY_PUBLIC)
     else:
         # accessible（默认）：自己的 + 公共库
-        # 超级管理员可看全部
-        if current_user.is_superuser:
-            pass  # 不加过滤
-        else:
-            query = query.filter(
-                (Document.user_id == current_user.id)
-                | (Document.visibility == VISIBILITY_PUBLIC)
-            )
+        # 隐私修复：超级管理员也只能看到自己的文档 + 公共文档
+        # （不能看到其他用户的私有文档，避免侵犯隐私）
+        query = query.filter(
+            (Document.user_id == current_user.id)
+            | (Document.visibility == VISIBILITY_PUBLIC)
+        )
 
     # 状态筛选
     if status:
