@@ -391,8 +391,12 @@ app.add_middleware(RateLimitMiddleware)
 """
 app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
 app.include_router(registration_router, prefix=settings.API_V1_PREFIX)
-app.include_router(documents_router, prefix=settings.API_V1_PREFIX)
+# 注意路由注册顺序：folders_router（前缀 /documents/folders）必须在 documents_router（前缀 /documents，
+# 含 /{document_id} 动态路由）之前注册。
+# 否则 GET /documents/folders 会被 documents_router 的 /{document_id} 匹配，"folders" 被解析为整数
+# document_id 失败，返回 422 Unprocessable Content。
 app.include_router(folders_router, prefix=settings.API_V1_PREFIX)
+app.include_router(documents_router, prefix=settings.API_V1_PREFIX)
 app.include_router(chat_router, prefix=settings.API_V1_PREFIX)
 app.include_router(document_chat_router, prefix=settings.API_V1_PREFIX)
 app.include_router(stats_router, prefix=settings.API_V1_PREFIX)

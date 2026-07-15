@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { MessageBubble } from "../MessageBubble";
 import type { ChatMessage } from "@/types/chat";
 
@@ -78,7 +78,7 @@ describe("MessageBubble 组件", () => {
     expect(screen.queryByText(/降级回复/)).not.toBeInTheDocument();
   });
 
-  it("AI 消息有 sources 时显示引用来源", () => {
+  it("AI 消息有 sources 时默认折叠显示检索结果数量，点击展开后显示来源", () => {
     render(
       <MessageBubble
         message={createAssistantMessage({
@@ -89,14 +89,21 @@ describe("MessageBubble 组件", () => {
         })}
       />,
     );
-    expect(screen.getByText("引用来源（2）")).toBeInTheDocument();
+    // 默认折叠：显示"检索到 N 个检索结果"可点击面板
+    expect(screen.getByText("检索到 2 个检索结果")).toBeInTheDocument();
+    // 折叠状态下不显示来源标题
+    expect(screen.queryByText("文档1")).not.toBeInTheDocument();
+    expect(screen.queryByText("文档2")).not.toBeInTheDocument();
+    // 点击展开
+    fireEvent.click(screen.getByRole("button", { name: /检索到 2 个检索结果/ }));
+    // 展开后显示来源标题
     expect(screen.getByText("文档1")).toBeInTheDocument();
     expect(screen.getByText("文档2")).toBeInTheDocument();
   });
 
-  it("AI 消息无 sources 时不显示引用来源区域", () => {
+  it("AI 消息无 sources 时不显示检索结果区域", () => {
     render(<MessageBubble message={createAssistantMessage({ sources: [] })} />);
-    expect(screen.queryByText(/引用来源/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/检索到.*检索结果/)).not.toBeInTheDocument();
   });
 
   it("流式状态且无内容时显示 TypingIndicator", () => {

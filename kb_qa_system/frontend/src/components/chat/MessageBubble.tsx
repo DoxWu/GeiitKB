@@ -12,7 +12,8 @@
  *   <MessageBubble message={tempMessage} streaming={true} />
  */
 
-import { Bot, AlertTriangle } from "lucide-react";
+import { useState } from "react";
+import { Bot, AlertTriangle, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/types/chat";
 import { SourceCard } from "./SourceCard";
@@ -35,6 +36,9 @@ export function MessageBubble({
   const isUser = message.role === "user";
   const sources = message.sources || [];
   const showTypingIndicator = streaming && !message.content;
+  // 检索结果默认折叠：确保用户优先查看 LLM 生成的回答内容，
+  // 仅在用户主动点击展开时才显示完整的检索结果列表。
+  const [sourcesExpanded, setSourcesExpanded] = useState(false);
 
   return (
     <div
@@ -96,15 +100,33 @@ export function MessageBubble({
           )}
         </div>
 
-        {/* 引用来源（仅 AI 消息有 sources 时显示） */}
+        {/* 检索结果（仅 AI 消息有 sources 时显示）
+            默认折叠为"检索到 N 个检索结果"的可点击面板，
+            仅在用户主动点击展开时才显示完整的检索结果列表，
+            确保用户优先查看 LLM 生成的回答内容。 */}
         {!isUser && sources.length > 0 && (
-          <div className="w-full space-y-1.5">
-            <p className="text-xs font-medium text-ink-tertiary">
-              引用来源（{sources.length}）
-            </p>
-            {sources.map((source, index) => (
-              <SourceCard key={index} source={source} />
-            ))}
+          <div className="w-full">
+            <button
+              type="button"
+              onClick={() => setSourcesExpanded((prev) => !prev)}
+              aria-expanded={sourcesExpanded}
+              className="flex w-full items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs font-medium text-ink-secondary transition-colors hover:border-brand/30 hover:text-ink"
+            >
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 shrink-0 text-ink-tertiary transition-transform duration-200",
+                  sourcesExpanded && "rotate-180",
+                )}
+              />
+              <span>检索到 {sources.length} 个检索结果</span>
+            </button>
+            {sourcesExpanded && (
+              <div className="mt-1.5 space-y-1.5">
+                {sources.map((source, index) => (
+                  <SourceCard key={index} source={source} />
+                ))}
+              </div>
+            )}
           </div>
         )}
 
