@@ -814,15 +814,19 @@ class Settings(BaseSettings):
             # 邮件配置校验（启用邮件时必须配置 API Key 和管理员邮箱）
             if self.EMAIL_ENABLED:
                 # 根据发送通道校验对应的 Key
+                # 兼容设计：RESEND_API_KEY 和 SMTP_PASSWORD 是同一个 Resend API Key，
+                # 如果 http 通道缺少 RESEND_API_KEY 但有 SMTP_PASSWORD，允许回退使用
                 if self.EMAIL_PROVIDER == "http":
-                    if not self.RESEND_API_KEY:
+                    if not self.RESEND_API_KEY and not self.SMTP_PASSWORD:
                         errors.append(
-                            "生产环境 EMAIL_PROVIDER=http 时必须设置 RESEND_API_KEY（Resend API Key）"
+                            "生产环境 EMAIL_PROVIDER=http 时必须设置 RESEND_API_KEY "
+                            "（或 SMTP_PASSWORD 作为回退，两者为同一个 Resend API Key）"
                         )
                 elif self.EMAIL_PROVIDER == "smtp":
-                    if not self.SMTP_PASSWORD:
+                    if not self.SMTP_PASSWORD and not self.RESEND_API_KEY:
                         errors.append(
-                            "生产环境 EMAIL_PROVIDER=smtp 时必须设置 SMTP_PASSWORD（Resend API Key）"
+                            "生产环境 EMAIL_PROVIDER=smtp 时必须设置 SMTP_PASSWORD "
+                            "（或 RESEND_API_KEY 作为回退，两者为同一个 Resend API Key）"
                         )
                 else:
                     errors.append(

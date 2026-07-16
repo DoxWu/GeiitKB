@@ -54,18 +54,27 @@ def _get_resend_client():
         延迟初始化 resend 客户端，避免在模块导入时（如测试环境）因缺少 API Key 报错。
         每次 API 调用前都会检查 Key 是否已设置。
 
+    兼容设计：
+        RESEND_API_KEY 和 SMTP_PASSWORD 是同一个 Resend API Key。
+        如果 RESEND_API_KEY 未设置，回退到 SMTP_PASSWORD，保持向后兼容
+        （用户原本只配置了 SMTP_PASSWORD，升级后无需额外添加 RESEND_API_KEY）。
+
     返回：
         resend.Emails 模块（已设置 api_key）
 
     异常：
-        ValueError - RESEND_API_KEY 未配置
+        ValueError - RESEND_API_KEY 和 SMTP_PASSWORD 均未配置
     """
     global _resend_client
-    if not settings.RESEND_API_KEY:
-        raise ValueError("RESEND_API_KEY 未配置，无法使用 HTTP API 通道")
+    # 兼容回退：优先使用 RESEND_API_KEY，缺失时回退到 SMTP_PASSWORD
+    api_key = settings.RESEND_API_KEY or settings.SMTP_PASSWORD
+    if not api_key:
+        raise ValueError(
+            "RESEND_API_KEY 和 SMTP_PASSWORD 均未配置，无法使用 HTTP API 通道"
+        )
     if _resend_client is None:
         import resend
-        resend.api_key = settings.RESEND_API_KEY
+        resend.api_key = api_key
         _resend_client = resend.Emails
     return _resend_client
 

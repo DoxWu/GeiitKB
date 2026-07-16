@@ -142,8 +142,9 @@ class TestEmailServiceStructure:
         """验证 HTTP API 通道使用 Resend SDK"""
         source = read_source("app/services/email_service.py")
         assert "import resend" in source, "应导入 resend SDK"
-        assert "resend.api_key = settings.RESEND_API_KEY" in source, \
-            "应设置 resend.api_key"
+        # 兼容回退：优先 RESEND_API_KEY，缺失时回退 SMTP_PASSWORD
+        assert "settings.RESEND_API_KEY or settings.SMTP_PASSWORD" in source, \
+            "应支持 RESEND_API_KEY 回退到 SMTP_PASSWORD"
 
     def test_http_api_passes_correct_params(self):
         """验证 HTTP API 传递正确的邮件参数"""
@@ -454,7 +455,7 @@ class TestEmailConfigStructure:
             "EMAIL_PROVIDER 默认应为 http（推荐生产通道）"
 
     def test_production_validation_supports_dual_channel(self):
-        """验证生产环境校验支持双通道（http/smtp 分别校验 Key）"""
+        """验证生产环境校验支持双通道（http/smtp 分别校验 Key，支持回退）"""
         source = read_source("app/core/config.py")
         assert 'EMAIL_PROVIDER == "http"' in source, \
             "应校验 http 通道的 RESEND_API_KEY"
@@ -462,6 +463,9 @@ class TestEmailConfigStructure:
             "应校验 smtp 通道的 SMTP_PASSWORD"
         assert "必须为 http 或 smtp" in source, \
             "应校验 EMAIL_PROVIDER 取值范围"
+        # 兼容回退：http 通道允许 SMTP_PASSWORD 作为回退
+        assert "SMTP_PASSWORD 作为回退" in source, \
+            "应支持 SMTP_PASSWORD 作为 http 通道的回退"
 
     def test_resend_default_values(self):
         """验证 Resend SMTP 默认值正确"""
