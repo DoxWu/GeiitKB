@@ -18,4 +18,4 @@
 # ============================================
 
 sentence-transformers==3.1.1  # 本地 Embedding + CrossEncoder 重排序
-langchain-community==0.3.3     # HuggingFaceEmbeddings 封装
+langchain-community==0.4.2     # HuggingFaceEmbeddings 封装
