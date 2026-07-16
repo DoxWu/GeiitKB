@@ -12,11 +12,20 @@ import 'highlight.js/styles/github.css'
 // 作用：根据 localStorage 或系统偏好设置 <html> 的 dark class
 initTheme()
 
-// D5-03 PWA：生产环境注册 Service Worker
-// 作用：缓存静态资源，支持离线访问和快速加载
-if ('serviceWorker' in navigator && import.meta.env.PROD) {
+// 缓存问题修复：移除 Service Worker 注册
+// 原因：SW 缓存版本号固定（geiit-kb-v1），部署新版本时不清理旧缓存，
+//       导致用户看到旧 index.html（引用已失效的 JS/CSS），需要手动清缓存才能恢复。
+//       本项目不需要离线访问，nginx 已处理静态资源缓存，SW 弊大于利，故移除。
+// 同时注销已注册的旧 SW，让现有用户也能恢复
+if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(console.error)
+    navigator.serviceWorker.getRegistrations().then((registrations) => {
+      registrations.forEach((registration) => {
+        registration.unregister().then((success) => {
+          if (success) console.info('已注销旧 Service Worker，缓存问题已修复')
+        })
+      })
+    })
   })
 }
 

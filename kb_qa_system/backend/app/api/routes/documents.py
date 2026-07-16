@@ -480,21 +480,48 @@ async def upload_document(
         )
 
         # file_hash 唯一约束已移除（迁移 20260715_0006），IntegrityError 不再因哈希冲突触发。
-        # 保留兜底处理以防其他唯一约束（如未来扩展）冲突。
+        # 兼容性修复：若迁移未应用（DB 仍有 file_hash 唯一约束），其他用户上传过相同内容
+        # 会触发 IntegrityError。此时将 file_hash 设为 None 重试插入（去重逻辑已在应用层完成，
+        # 仅检查当前用户的活跃文档，不影响业务正确性）。
         try:
             db.add(db_document)
             db.commit()
             db.refresh(db_document)
         except IntegrityError:
             db.rollback()
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={"error": {"code": "FILE_ALREADY_EXISTS", "message": "文档记录冲突，请重试"}},
-            )
+            # 兼容性修复：检测是否为 file_hash 唯一约束冲突（迁移未应用的情况）
+            # 若是，将 file_hash 设为 None 后重试，允许当前用户上传相同内容
+            if file_hash:
+                logger.warning(
+                    f"file_hash 唯一约束可能仍在（迁移 20260715_0006 未应用），"
+                    f"将 file_hash 设为 None 重试插入: user_id={current_user.id}, file={safe_filename}"
+                )
+                db_document.file_hash = None
+                try:
+                    db.add(db_document)
+                    db.commit()
+                    db.refresh(db_document)
+                except IntegrityError:
+                    # 非 file_hash 冲突的其他唯一约束冲突
+                    db.rollback()
+                    try:
+                        os.remove(file_path)
+                    except Exception:
+                        pass
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={"error": {"code": "FILE_ALREADY_EXISTS", "message": "文档记录冲突，请重试"}},
+                    )
+            else:
+                # 无 file_hash 仍冲突，说明是其他唯一约束
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"error": {"code": "FILE_ALREADY_EXISTS", "message": "文档记录冲突，请重试"}},
+                )
     finally:
         # M-2 修复：无论成功失败，释放上传去重锁
         if upload_lock_key and upload_lock_token:
