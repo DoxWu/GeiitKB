@@ -2,14 +2,18 @@
 邮件发送服务
 
 作用：
-    封装 SMTP 邮件发送逻辑，支持 HTML 邮件和异步发送。
+    封装邮件发送逻辑，支持 HTTP API 和 SMTP 双通道，支持 HTML 邮件和异步发送。
     所有邮件发送通过 Celery 异步执行（调用 send_email_sync）。
 
 技术决策：
-    1. 使用 aiosmtplib（异步 SMTP 库），通过 asyncio.run() 包装供 Celery 同步 task 调用
-    2. 使用 email.message.EmailMessage 构建 MIME 邮件（非字符串拼接，防注入）
-    3. HTML 模板中所有用户输入经 html.escape() 转义（防 XSS）
-    4. EMAIL_ENABLED=False 时仅记录日志不连接 SMTP（开发环境降级）
+    1. 双通道设计：
+       - 主通道 HTTP API（Resend 官方 SDK，HTTPS 443，不受 Railway SMTP 限制）
+       - 备用通道 SMTP（aiosmtplib，本地开发或无 SMTP 限制环境）
+       - 通过 EMAIL_PROVIDER 配置切换（http / smtp）
+    2. SMTP 通道使用 email.message.EmailMessage 构建 MIME 邮件（非字符串拼接，防注入）
+    3. HTTP API 通道使用 resend SDK，参数为字典（SDK 内部处理编码，防注入）
+    4. HTML 模板中所有用户输入经 html.escape() 转义（防 XSS）
+    5. EMAIL_ENABLED=False 时仅记录日志不发送（开发环境降级）
 
 使用方式：
     # 在 Celery task 中（同步上下文）
@@ -33,6 +37,37 @@ from email.message import EmailMessage
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================
+# Resend HTTP API 客户端（懒加载，避免无 API Key 时报错）
+# ============================================
+
+_resend_client = None
+
+
+def _get_resend_client():
+    """
+    获取 Resend HTTP API 客户端（懒加载）
+
+    作用：
+        延迟初始化 resend 客户端，避免在模块导入时（如测试环境）因缺少 API Key 报错。
+        每次 API 调用前都会检查 Key 是否已设置。
+
+    返回：
+        resend.Emails 模块（已设置 api_key）
+
+    异常：
+        ValueError - RESEND_API_KEY 未配置
+    """
+    global _resend_client
+    if not settings.RESEND_API_KEY:
+        raise ValueError("RESEND_API_KEY 未配置，无法使用 HTTP API 通道")
+    if _resend_client is None:
+        import resend
+        resend.api_key = settings.RESEND_API_KEY
+        _resend_client = resend.Emails
+    return _resend_client
 
 
 # ============================================
@@ -283,20 +318,71 @@ def get_email_subject(email_type: str) -> str:
 
 
 # ============================================
-# SMTP 发送
+# 邮件发送（双通道：HTTP API 主 + SMTP 备用）
 # ============================================
 
-async def _send_email_async(
+def _send_via_http_api(
+    to: str,
+    subject: str,
+    html_body: str,
+) -> str:
+    """
+    通过 Resend HTTP API 发送邮件（主通道）
+
+    作用：
+        使用 Resend 官方 SDK 通过 HTTPS 443 端口发送邮件，
+        绕过 Railway 等云平台对 SMTP 端口（25/465/587）的限制。
+
+    优势：
+        - HTTPS 443 端口通常不受云平台限制
+        - Resend 官方推荐方式，性能优于 SMTP
+        - SDK 内部处理重试和错误分类
+
+    参数：
+        to: str - 收件人邮箱
+        subject: str - 邮件主题（固定文案，不含用户输入）
+        html_body: str - HTML 邮件内容（已渲染，用户输入已转义）
+
+    返回：
+        str - Resend 返回的邮件 ID（如 "re_123abc"）
+
+    异常：
+        ValueError - RESEND_API_KEY 未配置
+        resend.ResendError - API 调用失败（由 Celery 重试机制处理）
+    """
+    client = _get_resend_client()
+    # 解析发件人地址：从 "Name <email>" 格式提取纯邮箱
+    # Resend HTTP API 的 from 字段支持 "Name <email>" 格式
+    params = {
+        "from": settings.EMAIL_FROM,
+        "to": [to],
+        "subject": subject,
+        "html": html_body,
+    }
+    result = client.send(params)
+    email_id = result.get("id", "unknown") if isinstance(result, dict) else "unknown"
+    logger.info(
+        "邮件发送成功（HTTP API）| to=%s | subject=%s | id=%s",
+        to, subject, email_id
+    )
+    return email_id
+
+
+async def _send_via_smtp_async(
     to: str,
     subject: str,
     html_body: str,
 ) -> None:
     """
-    异步发送邮件（底层 SMTP 方法）
+    通过 SMTP 异步发送邮件（备用通道）
 
     作用：
         构建 MIME 邮件并通过 aiosmtplib 发送。
         使用 EmailMessage 构建（非字符串拼接），防止邮件头注入。
+
+    适用场景：
+        - 本地开发环境（无 SMTP 限制）
+        - EMAIL_PROVIDER=smtp 的部署环境
 
     参数：
         to: str - 收件人邮箱
@@ -306,15 +392,6 @@ async def _send_email_async(
     异常：
         aiosmtplib.SMTPException - SMTP 发送失败（由 Celery 重试机制处理）
     """
-    # EMAIL_ENABLED=False 时仅记录日志，不连接 SMTP
-    # 作用：开发环境降级，邮件不发送但业务流程正常
-    if not settings.EMAIL_ENABLED:
-        logger.info(
-            "[EMAIL DISABLED] 邮件未发送（EMAIL_ENABLED=False）| to=%s | subject=%s",
-            to, subject
-        )
-        return
-
     # 使用 EmailMessage 构建 MIME 邮件
     # 安全：EmailMessage 自动处理头部编码，防止 CRLF 注入
     msg = EmailMessage()
@@ -340,7 +417,22 @@ async def _send_email_async(
         start_tls=settings.SMTP_START_TLS,
         timeout=settings.SMTP_TIMEOUT,
     )
-    logger.info("邮件发送成功 | to=%s | subject=%s", to, subject)
+    logger.info("邮件发送成功（SMTP）| to=%s | subject=%s", to, subject)
+
+
+def _send_via_smtp_sync(
+    to: str,
+    subject: str,
+    html_body: str,
+) -> None:
+    """
+    SMTP 通道同步包装（供 Celery 调用）
+
+    作用：
+        用 asyncio.run() 包装异步 _send_via_smtp_async，供 Celery 同步 task 调用。
+        Celery prefork 子进程无运行中的事件循环，asyncio.run() 安全可用。
+    """
+    asyncio.run(_send_via_smtp_async(to, subject, html_body))
 
 
 def send_email_sync(
@@ -349,11 +441,16 @@ def send_email_sync(
     html_body: str,
 ) -> None:
     """
-    同步发送邮件（Celery task 调用入口）
+    同步发送邮件（Celery task 调用入口，双通道自动选择）
 
     作用：
-        用 asyncio.run() 包装异步 _send_email_async，供 Celery 同步 task 调用。
-        Celery prefork 子进程无运行中的事件循环，asyncio.run() 安全可用。
+        根据 EMAIL_PROVIDER 配置选择发送通道：
+        - http（默认）：调用 Resend HTTP API（推荐生产环境，不受 SMTP 限制）
+        - smtp：调用 SMTP 发送（本地开发或无限制环境）
+
+    通用逻辑：
+        - EMAIL_ENABLED=False 时仅记录日志，不实际发送（开发环境降级）
+        - 发送失败抛出异常，由 Celery 重试机制处理
 
     参数：
         to: str - 收件人邮箱
@@ -361,6 +458,24 @@ def send_email_sync(
         html_body: str - HTML 邮件内容
 
     异常：
-        Exception - SMTP 发送失败（由 Celery 重试机制处理）
+        Exception - 发送失败（由 Celery 重试机制处理）
+        ValueError - EMAIL_PROVIDER 配置非法或对应通道的 Key 未配置
     """
-    asyncio.run(_send_email_async(to, subject, html_body))
+    # EMAIL_ENABLED=False 时仅记录日志，不连接任何邮件服务
+    # 作用：开发环境降级，邮件不发送但业务流程正常
+    if not settings.EMAIL_ENABLED:
+        logger.info(
+            "[EMAIL DISABLED] 邮件未发送（EMAIL_ENABLED=False）| to=%s | subject=%s",
+            to, subject
+        )
+        return
+
+    provider = settings.EMAIL_PROVIDER.lower()
+    if provider == "http":
+        _send_via_http_api(to, subject, html_body)
+    elif provider == "smtp":
+        _send_via_smtp_sync(to, subject, html_body)
+    else:
+        raise ValueError(
+            f"EMAIL_PROVIDER 配置非法（{settings.EMAIL_PROVIDER}），必须为 http 或 smtp"
+        )

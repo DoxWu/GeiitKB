@@ -81,8 +81,8 @@ def send_email_task(self, email_log_id: int) -> dict:
         log.celery_task_id = self.request.id
         db.commit()
 
-        # 调用 SMTP 发送邮件
-        # send_email_sync 内部用 asyncio.run 包装异步发送
+        # 调用邮件发送服务（双通道：HTTP API 主 / SMTP 备用，由 EMAIL_PROVIDER 配置决定）
+        # send_email_sync 内部根据配置自动选择通道
         send_email_sync(
             to=log.recipient,
             subject=log.subject,

@@ -110,10 +110,57 @@ class TestEmailServiceStructure:
         assert '"[GeiIt] 账号创建成功"' in source
 
     def test_send_email_sync_uses_asyncio_run(self):
-        """验证 send_email_sync 用 asyncio.run 包装异步发送"""
+        """验证 SMTP 通道用 asyncio.run 包装异步发送"""
         source = read_source("app/services/email_service.py")
-        assert "asyncio.run(_send_email_async" in source, \
-            "send_email_sync 应使用 asyncio.run 包装异步发送"
+        # 双通道重构后：SMTP 通道使用 asyncio.run 包装 _send_via_smtp_async
+        assert "asyncio.run(_send_via_smtp_async" in source, \
+            "SMTP 通道应使用 asyncio.run 包装异步发送"
+
+    def test_dual_channel_http_api_exists(self):
+        """验证 HTTP API 主通道发送函数存在"""
+        source = read_source("app/services/email_service.py")
+        assert "def _send_via_http_api(" in source, "应定义 _send_via_http_api 函数"
+        assert "def _get_resend_client()" in source, "应定义 _get_resend_client 懒加载函数"
+
+    def test_dual_channel_smtp_backup_exists(self):
+        """验证 SMTP 备用通道发送函数存在"""
+        source = read_source("app/services/email_service.py")
+        assert "def _send_via_smtp_async(" in source, "应定义 _send_via_smtp_async 函数"
+        assert "def _send_via_smtp_sync(" in source, "应定义 _send_via_smtp_sync 同步包装函数"
+
+    def test_send_email_sync_routes_by_provider(self):
+        """验证 send_email_sync 根据 EMAIL_PROVIDER 选择通道"""
+        source = read_source("app/services/email_service.py")
+        assert 'provider == "http"' in source, "应检查 EMAIL_PROVIDER=http"
+        assert 'provider == "smtp"' in source, "应检查 EMAIL_PROVIDER=smtp"
+        assert "_send_via_http_api(to, subject, html_body)" in source, \
+            "http 通道应调用 _send_via_http_api"
+        assert "_send_via_smtp_sync(to, subject, html_body)" in source, \
+            "smtp 通道应调用 _send_via_smtp_sync"
+
+    def test_http_api_uses_resend_sdk(self):
+        """验证 HTTP API 通道使用 Resend SDK"""
+        source = read_source("app/services/email_service.py")
+        assert "import resend" in source, "应导入 resend SDK"
+        assert "resend.api_key = settings.RESEND_API_KEY" in source, \
+            "应设置 resend.api_key"
+
+    def test_http_api_passes_correct_params(self):
+        """验证 HTTP API 传递正确的邮件参数"""
+        source = read_source("app/services/email_service.py")
+        # 应构造包含 from/to/subject/html 的参数字典
+        assert '"from": settings.EMAIL_FROM' in source, \
+            "应从配置读取 EMAIL_FROM"
+        assert '"to": [to]' in source, "收件人应为列表"
+        assert '"subject": subject' in source, "应传递主题"
+        assert '"html": html_body' in source, "应传递 HTML 内容"
+
+    def test_invalid_provider_raises_error(self):
+        """验证非法 EMAIL_PROVIDER 抛出 ValueError"""
+        source = read_source("app/services/email_service.py")
+        # 应有 else 分支抛出 ValueError
+        assert "EMAIL_PROVIDER 配置非法" in source, \
+            "非法 EMAIL_PROVIDER 应抛出 ValueError"
 
 
 # ============================================
@@ -354,19 +401,19 @@ class TestEmailServiceBehavior:
                 get_email_subject("unknown_type")
 
     def test_send_email_async_disabled_no_smtp(self):
-        """验证 EMAIL_ENABLED=False 时不连接 SMTP"""
+        """验证 EMAIL_ENABLED=False 时不连接任何邮件服务"""
         import sys
         sys.path.insert(0, str(BACKEND_DIR))
 
         with patch("app.core.config.settings") as mock_settings:
             mock_settings.EMAIL_ENABLED = False  # 关键：邮件禁用
             mock_settings.EMAIL_FROM = "test@test.com"
+            mock_settings.EMAIL_PROVIDER = "http"
 
-            from app.services.email_service import _send_email_async
+            from app.services.email_service import send_email_sync
 
-            # 即使 aiosmtplib 未安装也不应报错（不连接 SMTP）
-            import asyncio
-            asyncio.run(_send_email_async("to@test.com", "主题", "<h1>内容</h1>"))
+            # 即使未配置 API Key 也不应报错（EMAIL_ENABLED=False 时直接返回）
+            send_email_sync("to@test.com", "主题", "<h1>内容</h1>")
             # 到这里说明未抛异常，降级成功
 
 
@@ -378,10 +425,12 @@ class TestEmailConfigStructure:
     """邮件配置项验证"""
 
     def test_email_config_fields_exist(self):
-        """验证 13 个邮件配置项默认值存在"""
+        """验证邮件配置项默认值存在（含双通道新增字段）"""
         source = read_source("app/core/config.py")
         required_fields = [
             "EMAIL_ENABLED",
+            "EMAIL_PROVIDER",      # 双通道：http / smtp
+            "RESEND_API_KEY",      # 双通道：HTTP API Key
             "SMTP_HOST",
             "SMTP_PORT",
             "SMTP_USER",
@@ -397,6 +446,22 @@ class TestEmailConfigStructure:
         for field in required_fields:
             assert f"{field}:" in source or f"{field} :" in source, \
                 f"配置项 {field} 应在 config.py 中定义"
+
+    def test_email_provider_default_is_http(self):
+        """验证 EMAIL_PROVIDER 默认值为 http（主通道）"""
+        source = read_source("app/core/config.py")
+        assert 'EMAIL_PROVIDER: str = "http"' in source, \
+            "EMAIL_PROVIDER 默认应为 http（推荐生产通道）"
+
+    def test_production_validation_supports_dual_channel(self):
+        """验证生产环境校验支持双通道（http/smtp 分别校验 Key）"""
+        source = read_source("app/core/config.py")
+        assert 'EMAIL_PROVIDER == "http"' in source, \
+            "应校验 http 通道的 RESEND_API_KEY"
+        assert 'EMAIL_PROVIDER == "smtp"' in source, \
+            "应校验 smtp 通道的 SMTP_PASSWORD"
+        assert "必须为 http 或 smtp" in source, \
+            "应校验 EMAIL_PROVIDER 取值范围"
 
     def test_resend_default_values(self):
         """验证 Resend SMTP 默认值正确"""

@@ -138,31 +138,44 @@ class Settings(BaseSettings):
     ]
 
     # ============================================
-    # 邮件 SMTP 配置（Resend）
+    # 邮件配置（Resend HTTP API 主通道 + SMTP 备用通道）
     # ============================================
+    # 设计说明：
+    #   - Railway 等云平台限制出站 SMTP（端口 25/465/587），导致 SMTP 连接超时
+    #   - 主通道：Resend HTTP API（HTTPS 443，不受限制，官方推荐）
+    #   - 备用通道：SMTP（本地开发可用，或无 SMTP 限制的环境）
+    #   - 通过 EMAIL_PROVIDER 切换：http（默认）/ smtp
+    #   - RESEND_API_KEY 与 SMTP_PASSWORD 可使用同一个 Resend API Key
 
     # 是否启用邮件发送（开发环境关闭，仅记录日志；生产环境必须开启）
     EMAIL_ENABLED: bool = False
 
-    # SMTP 服务器地址（Resend: smtp.resend.com）
+    # 邮件发送通道：http（Resend HTTP API，默认，推荐生产）/ smtp（本地开发或无限制环境）
+    EMAIL_PROVIDER: str = "http"
+
+    # Resend HTTP API Key（格式 re_xxxxxxxxxxxx）
+    # 作用：HTTP API 认证；与 SMTP_PASSWORD 可共用同一个 Key
+    RESEND_API_KEY: str = ""
+
+    # SMTP 服务器地址（Resend: smtp.resend.com）- 备用通道
     SMTP_HOST: str = "smtp.resend.com"
 
-    # SMTP 端口（465=SSL 隐式 TLS，587=STARTTLS）
+    # SMTP 端口（465=SSL 隐式 TLS，587=STARTTLS）- 备用通道
     SMTP_PORT: int = 465
 
-    # SMTP 用户名（Resend 固定为 resend）
+    # SMTP 用户名（Resend 固定为 resend）- 备用通道
     SMTP_USER: str = "resend"
 
-    # SMTP 密码（Resend API Key，格式 re_xxxxxxxxxxxx）
+    # SMTP 密码（Resend API Key，格式 re_xxxxxxxxxxxx）- 备用通道
     SMTP_PASSWORD: str = ""
 
-    # 是否使用 SSL/TLS（端口 465 用 True）
+    # 是否使用 SSL/TLS（端口 465 用 True）- 备用通道
     SMTP_USE_TLS: bool = True
 
-    # 是否使用 STARTTLS（端口 587 用 True，与 USE_TLS 互斥）
+    # 是否使用 STARTTLS（端口 587 用 True，与 USE_TLS 互斥）- 备用通道
     SMTP_START_TLS: bool = False
 
-    # SMTP 连接超时（秒）
+    # SMTP 连接超时（秒）- 备用通道
     SMTP_TIMEOUT: int = 30
 
     # 发件人地址（Resend 默认域：onboarding@resend.dev，生产环境改为已验证域名）
@@ -798,10 +811,23 @@ class Settings(BaseSettings):
             if self.ENABLE_PROMETHEUS and self.ENABLE_PROMETHEUS_AUTH_ENABLED and not self.PROMETHEUS_AUTH_PASSWORD:
                 errors.append("生产环境 PROMETHEUS_AUTH_PASSWORD 不能为空")
 
-            # 邮件配置校验（启用邮件时必须配置 SMTP 密码和管理员邮箱）
+            # 邮件配置校验（启用邮件时必须配置 API Key 和管理员邮箱）
             if self.EMAIL_ENABLED:
-                if not self.SMTP_PASSWORD:
-                    errors.append("生产环境启用邮件时必须设置 SMTP_PASSWORD（Resend API Key）")
+                # 根据发送通道校验对应的 Key
+                if self.EMAIL_PROVIDER == "http":
+                    if not self.RESEND_API_KEY:
+                        errors.append(
+                            "生产环境 EMAIL_PROVIDER=http 时必须设置 RESEND_API_KEY（Resend API Key）"
+                        )
+                elif self.EMAIL_PROVIDER == "smtp":
+                    if not self.SMTP_PASSWORD:
+                        errors.append(
+                            "生产环境 EMAIL_PROVIDER=smtp 时必须设置 SMTP_PASSWORD（Resend API Key）"
+                        )
+                else:
+                    errors.append(
+                        f"生产环境 EMAIL_PROVIDER 必须为 http 或 smtp（当前 {self.EMAIL_PROVIDER}）"
+                    )
                 if not self.ADMIN_NOTIFY_EMAIL:
                     errors.append("生产环境启用邮件时必须设置 ADMIN_NOTIFY_EMAIL")
                 if "@" not in self.EMAIL_FROM:
