@@ -101,6 +101,31 @@ a {
 }
 
 /* ============================================
+ * 移动端侧边栏和文档详情栏背景色优化
+ * 作用：移动设备（<768px）上侧边栏和文档详情栏强制使用纯白/纯黑背景，
+ *       避免与页面背景过度融合导致内容不可辨。
+ *       - 亮色模式：纯白 #FFFFFF
+ *       - 暗色模式：纯黑 #000000
+ *       桌面端（≥768px）保持现有 bg-surface 效果不变。
+ *       使用 transition 确保模式切换时平滑过渡，无视觉闪烁。
+ * ============================================ */
+.mobile-solid-bg {
+  /* 桌面端默认不覆盖（保持 bg-surface 的 CSS 变量值） */
+  transition: background-color 200ms ease;
+}
+
+@media (max-width: 767px) {
+  /* 移动端亮色模式：纯白背景 */
+  .mobile-solid-bg {
+    background-color: #FFFFFF !important;
+  }
+  /* 移动端暗色模式：纯黑背景 */
+  .dark .mobile-solid-bg {
+    background-color: #000000 !important;
+  }
+}
+
+/* ============================================
  * 代码高亮 - highlight.js 暗色主题覆盖
  * 作用：亮色主题由 main.tsx 引入 github.css，
  *   此处覆盖暗色模式下的代码高亮颜色（对齐 github-dark.css）

@@ -218,6 +218,8 @@ export function DocumentPreview() {
           "fixed right-0 top-0 z-50 flex h-full w-full max-w-md flex-col",
           "border-l border-line bg-surface shadow-xl",
           "animate-slide-in-right lg:static lg:z-auto lg:w-96 lg:shadow-none",
+          // 移动端优化：mobile-solid-bg 在 <768px 时强制纯白/纯黑背景
+          "mobile-solid-bg",
         )}
       >
         {/* 头部 */}

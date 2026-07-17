@@ -563,7 +563,8 @@ export default function ChatPage() {
           />
         )}
         {/* 修复：wrapper 添加 bg-surface 确保侧边栏区域完全不透明 */}
-        <div className="relative h-full w-60 bg-surface">
+        {/* 移动端优化：添加 mobile-solid-bg，在 <768px 时强制纯白/纯黑背景 */}
+        <div className="relative h-full w-60 bg-surface mobile-solid-bg">
           <ChatSidebar onCollapse={() => setSidebarOpen(false)} />
         </div>
       </div>

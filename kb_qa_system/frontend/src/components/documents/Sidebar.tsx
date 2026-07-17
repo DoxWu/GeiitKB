@@ -68,7 +68,8 @@ export function Sidebar({ onCollapse }: SidebarProps) {
           // 可见性由父容器 DocumentsPage 的 hidden/block 控制，此处不再用 collapsed 操纵宽度
           // （此前 collapsed={!sidebarOpen} 在桌面端恒为 true，导致 w-0 侧边栏在正常缩放下不可见，
           //   仅在 300% 缩放触发移动端布局后才可见）
-          "flex h-full w-60 flex-shrink-0 flex-col border-r border-line bg-surface shadow-xl",
+          // 移动端优化：mobile-solid-bg 在 <768px 时强制纯白/纯黑背景
+          "flex h-full w-60 flex-shrink-0 flex-col border-r border-line bg-surface shadow-xl mobile-solid-bg",
         )}
       >
         {/* 顶部品牌区 */}

@@ -105,7 +105,8 @@ export function ChatSidebar({ onCollapse }: ChatSidebarProps) {
       className={cn(
         // 固定 w-60 宽度，使用 bg-surface（通过 CSS 变量自动适配深色模式）
         // 修复问题2：原 bg-white 硬编码白色，深色模式下不切换，而文字切换为白色 → 白底白字不可见
-        "flex h-full w-60 flex-col border-r border-line bg-surface shadow-xl",
+        // 移动端优化：mobile-solid-bg 在 <768px 时强制纯白/纯黑背景
+        "flex h-full w-60 flex-col border-r border-line bg-surface shadow-xl mobile-solid-bg",
       )}
     >
       {/* 顶部：品牌标识 */}
