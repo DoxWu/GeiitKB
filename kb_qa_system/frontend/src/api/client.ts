@@ -205,6 +205,7 @@ async function parseError(res: Response): Promise<HttpClientError> {
  *   - 用户在中国大陆访问海外服务器（如 Railway），网络不通
  *   - 服务器暂时不可用（部署中、崩溃）
  *   - CORS 预检失败
+ *   - 夸克/QQ/UC 等浏览器内核兼容性问题导致连接失败
  *
  * @param err - 原始错误对象
  * @returns 转换后的 Error（非网络错误原样返回）
@@ -213,12 +214,37 @@ function toFriendlyNetworkError(err: unknown): Error {
   if (err instanceof TypeError) {
     const msg = err.message.toLowerCase();
     if (msg.includes("failed to fetch") || msg.includes("networkerror") || msg.includes("load failed")) {
-      return new Error(
-        "网络连接失败，无法访问服务器。如果您在中国大陆访问，可能需要使用代理或 VPN。请检查网络连接后重试。",
-      );
+      return new Error(getNetworkErrorMessage());
     }
   }
   return err as Error;
+}
+
+/**
+ * 获取网络错误消息（含浏览器兼容性提示）
+ *
+ * 作用：
+ *   根据 userAgent 检测浏览器类型，对夸克/QQ/UC 等国产浏览器
+ *   返回含更换浏览器建议的错误消息。
+ *
+ * @returns 友好的中文错误消息
+ */
+function getNetworkErrorMessage(): string {
+  const ua = navigator.userAgent.toLowerCase();
+  // 国产浏览器兼容性检测
+  // 作用：这些浏览器在处理跨域请求、SSE、WebSocket 时可能行为不一致，
+  //       导致连接服务器失败。检测到时提示用户更换浏览器。
+  const isQuark = ua.includes("quark");
+  const isQQ = ua.includes("qqbrowser") || (ua.includes("qq") && !ua.includes("edge"));
+  const isUC = ua.includes("ucbrowser") || ua.includes("ubrowser");
+  const isBaidu = ua.includes("baidu") || ua.includes("bdbrowser");
+  const isSogou = ua.includes("sogou");
+  const isLiebao = ua.includes("liebao") || ua.includes("lbbrowser");
+
+  if (isQuark || isQQ || isUC || isBaidu || isSogou || isLiebao) {
+    return "网络连接失败，无法访问服务器。您当前使用的浏览器可能存在兼容性问题，建议更换为 Chrome、Edge 或 Firefox 等主流浏览器后重试。";
+  }
+  return "网络连接失败，无法访问服务器。如果您在中国大陆访问，可能需要使用代理或 VPN。请检查网络连接后重试。";
 }
 
 /** API 客户端接口定义 */
@@ -517,8 +543,8 @@ export const apiClient: ApiClient = {
       xhr.onerror = () => {
         reject(new HttpClientError(
           0,
-          "网络连接失败，无法访问服务器。如果您在中国大陆访问，可能需要使用代理或 VPN。请检查网络连接后重试。",
-          "网络连接失败，无法访问服务器。如果您在中国大陆访问，可能需要使用代理或 VPN。请检查网络连接后重试。",
+          getNetworkErrorMessage(),
+          getNetworkErrorMessage(),
         ));
       };
 
