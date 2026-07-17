@@ -227,7 +227,7 @@ export default function ChatPage() {
         return;
       }
 
-      // 修复问题3：上传新文档前中断正在进行的文档对话流式请求，
+      // 修复：上传新文档前中断正在进行的文档对话流式请求，
       // 避免旧流式回调写入已清空的 docMessages 导致对话记录错乱
       docAbortRef.current?.abort();
       docAbortRef.current = null;
@@ -245,10 +245,14 @@ export default function ChatPage() {
         );
 
         // 切换到文档对话模式
+        // 修复：如果用户在现有对话中上传文档，文档对话应关联到当前对话，
+        // 而不是创建新对话。通过 getState() 获取最新值避免 stale closure。
+        const currentConvId = useChatStore.getState().currentConversationId;
         setDocSessionId(response.session_id);
         setUploadedFile(response);
         setDocMessages([]);
-        setDocConversationId(null);
+        // 关键修复：保留当前对话 ID，使文档对话在当前对话中继续，不新开对话窗口
+        setDocConversationId(currentConvId);
         setDocStreamingContent("");
 
         // 提示用户
@@ -312,10 +316,14 @@ export default function ChatPage() {
         );
 
         // 切换到文档对话模式
+        // 修复：如果用户在现有对话中选择文档库文档，文档对话应关联到当前对话，
+        // 而不是创建新对话。通过 getState() 获取最新值避免 stale closure。
+        const currentConvId = useChatStore.getState().currentConversationId;
         setDocSessionId(response.session_id);
         setUploadedFile(response);
         setDocMessages([]);
-        setDocConversationId(null);
+        // 关键修复：保留当前对话 ID，使文档对话在当前对话中继续，不新开对话窗口
+        setDocConversationId(currentConvId);
         setDocStreamingContent("");
 
         // 提示用户
