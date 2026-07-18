@@ -20,7 +20,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Menu, MessageSquare, FileText } from "lucide-react";
+import {
+  Menu,
+  MessageSquare,
+  FileText,
+  ChevronUp,
+  ChevronDown,
+} from "lucide-react";
 import { ChatSidebar } from "@/components/chat/ChatSidebar";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { ChatInput } from "@/components/chat/ChatInput";
@@ -76,6 +82,8 @@ export default function ChatPage() {
 
   // 用户是否在滚动容器底部附近
   const [isAtBottom, setIsAtBottom] = useState(true);
+  // 用户是否在滚动容器顶部附近（用于控制"移动到最顶部"按钮显隐）
+  const [isAtTop, setIsAtTop] = useState(true);
 
   // ===== 文档对话状态 =====
   /** 文档对话会话 ID（null 表示知识库问答模式） */
@@ -132,6 +140,24 @@ export default function ChatPage() {
       messagesContainerRef.current;
     const distanceToBottom = scrollHeight - scrollTop - clientHeight;
     setIsAtBottom(distanceToBottom < 120);
+    // 检测是否在顶部附近（scrollTop < 120 视为在顶部）
+    setIsAtTop(scrollTop < 120);
+  }, []);
+
+  /** 滚动到顶部 */
+  const scrollToTop = useCallback(() => {
+    messagesContainerRef.current?.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    });
+  }, []);
+
+  /** 滚动到底部 */
+  const scrollToBottom = useCallback(() => {
+    messagesContainerRef.current?.scrollTo({
+      top: messagesContainerRef.current.scrollHeight,
+      behavior: "smooth",
+    });
   }, []);
 
   // 页面加载时获取对话列表
@@ -617,11 +643,13 @@ export default function ChatPage() {
           </div>
         )}
 
-        {/* 消息列表区 */}
+        {/* 消息列表区容器（相对定位，用于放置浮动滚动按钮） */}
+        <div className="relative flex-1 overflow-hidden">
+        {/* 消息列表区（滚动容器） */}
         <div
           ref={messagesContainerRef}
           onScroll={handleScroll}
-          className="flex-1 overflow-y-auto px-4 py-6"
+          className="h-full overflow-y-auto px-4 py-6"
         >
           {inDocMode ? (
             // 文档对话模式
@@ -684,6 +712,35 @@ export default function ChatPage() {
               <div ref={messagesEndRef} />
             </div>
           )}
+        </div>
+
+        {/* 移动到最顶部按钮（顶部时隐藏） */}
+        {!isAtTop && (
+          <button
+            onClick={scrollToTop}
+            className={cn(
+              "absolute left-1/2 top-3 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-line bg-surface text-ink-secondary shadow-md transition-colors hover:bg-muted hover:text-ink",
+            )}
+            aria-label="移动到最顶部"
+            title="移动到最顶部"
+          >
+            <ChevronUp className="h-4 w-4" />
+          </button>
+        )}
+
+        {/* 移动到最底部按钮（底部时隐藏） */}
+        {!isAtBottom && (
+          <button
+            onClick={scrollToBottom}
+            className={cn(
+              "absolute bottom-3 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-line bg-surface text-ink-secondary shadow-md transition-colors hover:bg-muted hover:text-ink",
+            )}
+            aria-label="移动到最底部"
+            title="移动到最底部"
+          >
+            <ChevronDown className="h-4 w-4" />
+          </button>
+        )}
         </div>
 
         {/* 输入区 */}
