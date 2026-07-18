@@ -306,9 +306,21 @@ export default function ChatPage() {
    *   - 用户仍可在当前界面查看之前的文档问答记录
    *   - 新提问将走知识库问答模式（chatStore）
    *   - 上传/选择新文档时才清空 docMessages（见 handleFileSelect / handleSelectFromLibrary）
+   *
+   * 修复问题2：清除文档后继续提问，LLM 丢失文档对话上下文。
+   * 根因：用户在新对话中上传文档时，文档对话后端会创建新 Conversation 并返回 id，
+   *       前端仅更新 docConversationId，未同步 chatStore.currentConversationId。
+   *       清除文档后继续提问走 chatStore.sendMessage，传 conversation_id=undefined，
+   *       后端创建新对话，丢失文档对话历史。
+   * 修复：清除文档时将 docConversationId 同步到 chatStore.currentConversationId，
+   *       后续 sendMessage 复用同一对话，后端从数据库加载完整历史（含文档对话消息）。
    */
   const handleClearFile = useCallback(() => {
     docAbortRef.current?.abort();
+
+    // 捕获文档对话关联的 conversation_id，用于同步到 chatStore
+    const convIdToSync = docConversationId;
+
     setDocSessionId(null);
     setDocConversationId(null);
     setUploadedFile(null);
@@ -316,7 +328,17 @@ export default function ChatPage() {
     setDocStreaming(false);
     setDocStreamingContent("");
     docStreamingContentRef.current = "";
-  }, []);
+
+    // 同步文档对话的 conversation_id 到 chatStore，
+    // 使后续知识库问答复用同一对话，后端从数据库加载完整历史（含文档对话消息），
+    // 避免 LLM 丢失上下文。仅当两者不同时同步（避免场景 B 重复设置）。
+    if (convIdToSync !== null) {
+      const chatStoreState = useChatStore.getState();
+      if (chatStoreState.currentConversationId !== convIdToSync) {
+        useChatStore.setState({ currentConversationId: convIdToSync });
+      }
+    }
+  }, [docConversationId]);
 
   /** 从文档库选择文档进行对话 */
   const handleSelectFromLibrary = useCallback(
@@ -714,12 +736,12 @@ export default function ChatPage() {
           )}
         </div>
 
-        {/* 移动到最顶部按钮（顶部时隐藏） */}
+        {/* 移动到最顶部按钮（顶部时隐藏，位于右侧） */}
         {!isAtTop && (
           <button
             onClick={scrollToTop}
             className={cn(
-              "absolute left-1/2 top-3 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-line bg-surface text-ink-secondary shadow-md transition-colors hover:bg-muted hover:text-ink",
+              "absolute right-4 top-3 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-line bg-surface text-ink-secondary shadow-md transition-colors hover:bg-muted hover:text-ink",
             )}
             aria-label="移动到最顶部"
             title="移动到最顶部"
@@ -728,12 +750,12 @@ export default function ChatPage() {
           </button>
         )}
 
-        {/* 移动到最底部按钮（底部时隐藏） */}
+        {/* 移动到最底部按钮（底部时隐藏，位于右侧） */}
         {!isAtBottom && (
           <button
             onClick={scrollToBottom}
             className={cn(
-              "absolute bottom-3 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-line bg-surface text-ink-secondary shadow-md transition-colors hover:bg-muted hover:text-ink",
+              "absolute bottom-3 right-4 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-line bg-surface text-ink-secondary shadow-md transition-colors hover:bg-muted hover:text-ink",
             )}
             aria-label="移动到最底部"
             title="移动到最底部"
