@@ -33,7 +33,8 @@ from app.models.user import User
 from app.models.conversation import Conversation, Message
 from app.schemas.chat import (
     QuestionRequest, AnswerResponse, ConversationResponse,
-    ConversationListResponse, MessageResponse, SourceItem
+    ConversationListResponse, MessageResponse, SourceItem,
+    RegenerateRequest,
 )
 
 # 模块日志器
@@ -652,6 +653,314 @@ async def ask_question_stream(
             "Cache-Control": "no-cache",  # 禁用缓存
             "Connection": "keep-alive",   # 保持连接
             "X-Accel-Buffering": "no",    # Nginx 禁用缓冲
+        }
+    )
+
+
+# ============================================
+# 重新生成（流式 SSE）
+# ============================================
+
+@router.post(
+    "/regenerate/stream",
+    summary="重新生成 AI 回答（流式输出）",
+    # 限流：复用 ask 限流配额
+    dependencies=[Depends(rate_limit("ask", per_minute=settings.RATE_LIMIT_ASK_PER_MINUTE))],
+)
+async def regenerate_answer_stream(
+    request_data: RegenerateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> StreamingResponse:
+    """
+    重新生成 AI 回答接口（流式输出）
+
+    作用：
+        当用户对 AI 的回答不满意时，可重新生成回答。
+        后端查找要重新生成的 assistant 消息（默认最后一条），
+        定位其前最近的 user 消息，删除原 assistant 消息后重新调用 LLM 流式生成。
+        不保存新的 user 消息（复用原有的），新 assistant 消息标记 is_regenerated=True。
+
+    实现方式：
+        1. 校验 conversation_id 归属当前用户
+        2. 定位要重新生成的 assistant 消息（message_id 或最后一条）
+        3. 查找其前最近的 user 消息作为当前问题
+        4. 删除原 assistant 消息（物理删除）
+        5. 获取对话历史（排除该 user 消息，避免重复）
+        6. 调用 RAG 流式生成（复用 ask_stream 逻辑）
+        7. 流结束后保存新 assistant 消息（is_regenerated=True）
+
+    请求体：
+        {
+            "conversation_id": 123,
+            "message_id": 456,
+            "idempotency_key": "req-abc-123"
+        }
+
+    响应：
+        SSE 格式，同 /chat/ask/stream
+    """
+    import time as _time
+    from app.services.qa_event_service import qa_event_service
+    from app.services.history_service import history_service
+    from app.services.intent_service import intent_service
+
+    total_start = _time.time()
+
+    # 0. 幂等性检查（仅防止并发重复）
+    idempotency_key = request_data.idempotency_key
+    idempotency_lock_key = None
+    idempotency_lock_token = None
+    if idempotency_key:
+        idempotency_lock_key = RedisKeys.idempotency_lock(
+            current_user.id, idempotency_key
+        )
+        idempotency_lock_token = RedisManager.acquire_lock(
+            idempotency_lock_key, ttl=settings.IDEMPOTENCY_LOCK_TTL
+        )
+        if idempotency_lock_token is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"error": {"code": "DUPLICATE_REQUEST", "message": "请求正在处理中，请勿重复提交"}},
+            )
+
+    # guest 用户限制（同 ask 接口）
+    if getattr(current_user, "user_type", "regular") == "guest":
+        count_key = f"guest:question_count:{current_user.id}"
+        current_count_raw = RedisManager.get(count_key)
+        current_count = int(current_count_raw) if current_count_raw else 0
+        if current_count >= settings.GUEST_QUESTION_LIMIT:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "error": {
+                        "code": "GUEST_QUESTION_LIMIT_EXCEEDED",
+                        "message": f"临时用户提问次数已达上限（{settings.GUEST_QUESTION_LIMIT} 次），请注册正式账号继续使用",
+                    }
+                },
+            )
+
+    try:
+        # 1. 校验对话归属当前用户
+        conversation = db.query(Conversation).filter(
+            Conversation.id == request_data.conversation_id,
+            Conversation.user_id == current_user.id,
+            Conversation.is_active == True,
+        ).first()
+
+        if not conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": {"code": "CONVERSATION_NOT_FOUND", "message": "对话不存在"}},
+            )
+
+        # 2. 定位要重新生成的 assistant 消息
+        if request_data.message_id:
+            # 指定 message_id：校验归属和角色
+            target_msg = db.query(Message).filter(
+                Message.id == request_data.message_id,
+                Message.conversation_id == conversation.id,
+                Message.role == "assistant",
+            ).first()
+            if not target_msg:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={"error": {"code": "MESSAGE_NOT_FOUND", "message": "要重新生成的 AI 消息不存在"}},
+                )
+        else:
+            # 未指定：取最后一条 assistant 消息
+            target_msg = db.query(Message).filter(
+                Message.conversation_id == conversation.id,
+                Message.role == "assistant",
+            ).order_by(Message.created_at.desc()).first()
+
+            if not target_msg:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={"error": {"code": "NO_ASSISTANT_MESSAGE", "message": "对话中没有可重新生成的 AI 消息"}},
+                )
+
+        # 3. 查找 target_msg 之前最近的 user 消息（作为当前问题）
+        user_message = db.query(Message).filter(
+            Message.conversation_id == conversation.id,
+            Message.role == "user",
+            Message.created_at < target_msg.created_at,
+        ).order_by(Message.created_at.desc()).first()
+
+        if not user_message:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": {"code": "NO_USER_MESSAGE", "message": "未找到对应的用户提问，无法重新生成"}},
+            )
+
+        # 4. 删除原 assistant 消息（物理删除，避免历史污染）
+        # 作用：重新生成后只保留新回答，避免同一问题出现多个 AI 回答
+        db.delete(target_msg)
+        db.commit()
+
+        # 5. 获取对话历史（排除当前 user 消息，避免它既作为 question 又作为 history）
+        history, summary = history_service.get_effective_history(
+            db, conversation, exclude_message_id=user_message.id
+        )
+
+        # 6. 意图切换检测
+        intent_result = intent_service.detect_intent_switch(
+            user_message.content, history
+        )
+        effective_summary = None if intent_result.switched else summary
+    except HTTPException:
+        # 异常时释放幂等锁
+        if idempotency_lock_key and idempotency_lock_token:
+            RedisManager.release_lock(idempotency_lock_key, idempotency_lock_token)
+        raise
+    except Exception:
+        if idempotency_lock_key and idempotency_lock_token:
+            RedisManager.release_lock(idempotency_lock_key, idempotency_lock_token)
+        raise
+
+    # 7. 捕获纯值，供流式生成器闭包使用
+    conv_id = conversation.id
+    user_id_val = current_user.id
+    user_type_val = getattr(current_user, "user_type", "regular")
+    question_text = user_message.content
+    parent_msg_id = target_msg.id  # 原消息 ID（已被删除，但 ID 值仍可用于追溯）
+
+    async def event_stream():
+        """
+        SSE 事件生成器（重新生成）
+
+        复用 ask_stream 的流式逻辑，区别：
+        - 不保存新的 user 消息（复用原有的）
+        - 新 assistant 消息标记 is_regenerated=True
+        - 不递增 turn_count（同一轮的重新生成，不增加对话轮数）
+        """
+        full_answer = ""
+        sources = []
+        degraded = False
+        degrade_reason = None
+        metrics = {}
+        intent_type = "kb_query"
+
+        try:
+            from app.services.rag_chain import get_rag_chain
+            rag_chain = get_rag_chain()
+
+            async for chunk in rag_chain.ask_stream(
+                question=question_text,
+                conversation_history=history,
+                user_id=user_id_val,
+                user_type=user_type_val,
+                summary=effective_summary,
+                intent_switched=intent_result.switched,
+            ):
+                sse_data = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                yield sse_data
+
+                if chunk["type"] == "chunk":
+                    full_answer += chunk["content"]
+                elif chunk["type"] == "sources":
+                    sources = chunk["content"]
+                    if "intent" in chunk:
+                        intent_type = chunk["intent"].get("type", "kb_query")
+                elif chunk["type"] == "done":
+                    full_answer = chunk["content"]
+                    degraded = chunk.get("degraded", False)
+                    degrade_reason = chunk.get("degrade_reason")
+                    metrics = chunk.get("metrics", {})
+
+            # guest 用户计数
+            if user_type_val == "guest":
+                count_key = f"guest:question_count:{user_id_val}"
+                RedisManager.increment(count_key)
+                RedisManager.expire(count_key, settings.GUEST_QUESTION_COUNT_TTL)
+
+            # 8. 保存新 assistant 消息（标记 is_regenerated=True）
+            from app.core.database import SessionLocal as _SessionLocal
+            post_db = _SessionLocal()
+            try:
+                assistant_message = Message(
+                    conversation_id=conv_id,
+                    role="assistant",
+                    content=full_answer,
+                    sources=sources,
+                    is_degraded=degraded,
+                    degrade_reason=degrade_reason,
+                    is_regenerated=True,
+                    parent_message_id=parent_msg_id,
+                )
+                post_db.add(assistant_message)
+                # 注意：重新生成不递增 turn_count（同一轮的重新生成）
+                post_db.commit()
+                post_db.refresh(assistant_message)
+
+                # 记录 QA 事件埋点
+                total_time_ms = int((_time.time() - total_start) * 1000)
+                qa_event_service.record_event(
+                    db=post_db,
+                    message_id=assistant_message.id,
+                    conversation_id=conv_id,
+                    user_id=user_id_val,
+                    question=question_text,
+                    answer=full_answer,
+                    metrics=metrics,
+                    degraded=degraded,
+                    degrade_reason=degrade_reason,
+                    total_time_ms=total_time_ms,
+                )
+
+                from app.core.prometheus_metrics import record_total_duration
+                record_total_duration(intent_type, total_time_ms / 1000.0)
+            finally:
+                post_db.close()
+
+        except Exception:
+            logger.exception("重新生成流式问答处理异常，保存部分回答")
+
+            # 保存部分回答（仅当有实际内容时）
+            if full_answer.strip():
+                try:
+                    from app.core.database import SessionLocal as _SessionLocal2
+                    err_db = _SessionLocal2()
+                    try:
+                        partial_message = Message(
+                            conversation_id=conv_id,
+                            role="assistant",
+                            content=full_answer,
+                            sources=sources,
+                            is_degraded=True,
+                            degrade_reason="stream_error",
+                            is_regenerated=True,
+                            parent_message_id=parent_msg_id,
+                        )
+                        err_db.add(partial_message)
+                        err_db.commit()
+                    finally:
+                        err_db.close()
+                except Exception:
+                    pass
+
+            error_data = {
+                "type": "error",
+                "content": "抱歉，重新生成过程中出现错误，请稍后重试",
+            }
+            yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+
+        finally:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
+            if idempotency_lock_key and idempotency_lock_token:
+                RedisManager.release_lock(idempotency_lock_key, idempotency_lock_token)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         }
     )
 

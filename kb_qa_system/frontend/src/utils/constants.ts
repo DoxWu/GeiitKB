@@ -57,6 +57,7 @@ export const API_PATHS = {
   // 对话相关
   CHAT_ASK: "/chat/ask",
   CHAT_ASK_STREAM: "/chat/ask/stream",
+  CHAT_REGENERATE_STREAM: "/chat/regenerate/stream",
   CONVERSATIONS: "/chat/conversations",
   CONVERSATION_DETAIL: (id: number) => `/chat/conversations/${id}`,
   // 文档对话相关

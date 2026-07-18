@@ -107,6 +107,58 @@ class QuestionRequest(BaseModel):
         return v
 
 
+class RegenerateRequest(BaseModel):
+    """
+    重新生成请求 Schema
+
+    作用：
+        定义重新生成 AI 回答的请求体格式。
+
+    使用场景：
+        POST /api/v1/chat/regenerate/stream
+
+    实现方式：
+        接收 conversation_id（必填）和可选 message_id（要重新生成的 assistant 消息 ID），
+        后端查找该消息前最近的 user 消息，删除原 assistant 消息后重新生成。
+
+    示例请求体：
+        {
+            "conversation_id": 123,
+            "message_id": 456,
+            "idempotency_key": "req-abc-123"
+        }
+    """
+    # L-5 修复：conversation_id 添加 ge=1 正整数校验
+    conversation_id: int = Field(
+        ...,
+        ge=1,
+        description="会话ID（正整数，必填）"
+    )
+    # 要重新生成的 assistant 消息 ID（可选，不填则默认重新生成最后一条 assistant 消息）
+    message_id: Optional[int] = Field(
+        None,
+        ge=1,
+        description="要重新生成的 AI 消息ID（不填则默认重新生成最后一条 AI 消息）"
+    )
+    # 幂等性键（可选，防止重复提交）
+    idempotency_key: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="幂等性键，防止重复提交"
+    )
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def validate_idempotency_key(cls, v: Optional[str]) -> Optional[str]:
+        """校验幂等性键格式（同 QuestionRequest）"""
+        if v is None:
+            return v
+        import re
+        if not re.match(r"^[a-zA-Z0-9_\-]{1,100}$", v):
+            raise ValueError("idempotency_key 仅支持字母、数字、下划线和连字符，长度 1-100")
+        return v
+
+
 class SourceItem(BaseModel):
     """
     引用来源项 Schema

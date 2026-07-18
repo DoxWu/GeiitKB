@@ -80,6 +80,17 @@ interface ChatState {
    * @param question - 用户问题
    */
   sendMessage: (question: string) => Promise<void>;
+  /**
+   * 重新生成最后一条 AI 回答（流式）
+   *
+   * 作用：
+   *   1. 移除 messages 中最后一条 assistant 消息
+   *   2. 调用 /chat/regenerate/stream 重新生成
+   *   3. 流式累积新回答，完成后追加 assistant 消息（is_regenerated=true）
+   *
+   * @param messageId - 可选，要重新生成的 AI 消息 ID（默认最后一条）
+   */
+  regenerateMessage: (messageId?: number) => Promise<void>;
   /** 停止流式输出 */
   stopStreaming: () => void;
 
@@ -315,6 +326,161 @@ export const useChatStore = create<ChatState>((set, get) => ({
           error: errMsg,
           streamingContent: "",
           streamingSources: [],
+        }));
+      }
+    } finally {
+      set({ streaming: false, streamingContent: "", streamingSources: [] });
+      streamingController = null;
+    }
+  },
+
+  /**
+   * 重新生成最后一条 AI 回答（流式）
+   *
+   * 实现步骤：
+   *   1. 校验：必须存在 currentConversationId 和 assistant 消息
+   *   2. 移除 messages 中目标 assistant 消息（及之后的消息，通常无）
+   *   3. 启动流式重新生成请求
+   *   4. 流式累积内容到 streamingContent
+   *   5. 完成后追加新 assistant 消息（is_regenerated=true）
+   *   6. 异常时追加降级 assistant 消息
+   */
+  regenerateMessage: async (messageId?: number) => {
+    const state = get();
+    if (state.streaming) {
+      get().stopStreaming();
+    }
+
+    const conversationId = state.currentConversationId;
+    if (!conversationId) {
+      set({ error: "当前无对话，无法重新生成" });
+      return;
+    }
+
+    // 定位目标 assistant 消息（默认最后一条）
+    const messages = state.messages;
+    let targetIndex = -1;
+    if (messageId) {
+      targetIndex = messages.findIndex(
+        (m) => m.role === "assistant" && m.id === messageId,
+      );
+    } else {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "assistant") {
+          targetIndex = i;
+          break;
+        }
+      }
+    }
+
+    if (targetIndex === -1) {
+      set({ error: "未找到可重新生成的 AI 消息" });
+      return;
+    }
+
+    const targetMessage = messages[targetIndex];
+    // 移除目标 assistant 消息（保留之前的所有消息）
+    const remainingMessages = messages.slice(0, targetIndex);
+
+    // 重置流式状态
+    streamingController = new AbortController();
+    set({
+      messages: remainingMessages,
+      streaming: true,
+      streamingContent: "",
+      streamingSources: [],
+      error: null,
+    });
+
+    try {
+      await chatApi.regenerateStream(
+        {
+          conversation_id: conversationId,
+          message_id: targetMessage.id,
+        },
+        {
+          onSources: (sources) => {
+            set({ streamingSources: sources as SourceItem[] });
+          },
+          onChunk: (text) => {
+            set((s) => ({
+              streamingContent: s.streamingContent + text,
+            }));
+          },
+          onDone: (data) => {
+            const newMessage: ChatMessage = {
+              id: Date.now() + 1,
+              role: "assistant",
+              content: data.content,
+              sources: get().streamingSources,
+              created_at: new Date().toISOString(),
+              is_degraded: data.degraded,
+              is_regenerated: true,
+            };
+            set((s) => ({
+              messages: [...s.messages, newMessage],
+              streamingContent: "",
+              streamingSources: [],
+            }));
+          },
+          onError: (msg) => {
+            const errorMessage: ChatMessage = {
+              id: Date.now() + 1,
+              role: "assistant",
+              content: "",
+              created_at: new Date().toISOString(),
+              is_degraded: true,
+              degrade_reason: `智能体重新生成失败：${msg}`,
+              is_regenerated: true,
+            };
+            set((s) => ({
+              messages: [...s.messages, errorMessage],
+              error: msg,
+              streamingContent: "",
+              streamingSources: [],
+            }));
+          },
+        },
+        streamingController.signal,
+      );
+
+      // 重新生成后刷新对话列表（更新 updated_at 排序）
+      await get().loadConversations();
+    } catch (err) {
+      // 用户取消（AbortError）不报错，仅恢复原消息
+      if (err instanceof DOMException && err.name === "AbortError") {
+        // 用户取消：保留已生成的流式内容作为新消息
+        const partialContent = get().streamingContent;
+        if (partialContent.trim()) {
+          const partialMessage: ChatMessage = {
+            id: Date.now(),
+            role: "assistant",
+            content: partialContent + "\n\n_(重新生成已中断)_",
+            created_at: new Date().toISOString(),
+            is_regenerated: true,
+            is_degraded: true,
+            degrade_reason: "user_aborted",
+          };
+          set((s) => ({ messages: [...s.messages, partialMessage] }));
+        } else {
+          // 无内容：恢复原消息
+          set((s) => ({ messages: [...s.messages, targetMessage] }));
+        }
+      } else {
+        const errMsg =
+          err instanceof Error ? err.message : "重新生成失败，请稍后重试";
+        const errorMessage: ChatMessage = {
+          id: Date.now(),
+          role: "assistant",
+          content: "",
+          created_at: new Date().toISOString(),
+          is_degraded: true,
+          degrade_reason: errMsg,
+          is_regenerated: true,
+        };
+        set((s) => ({
+          messages: [...s.messages, errorMessage],
+          error: errMsg,
         }));
       }
     } finally {

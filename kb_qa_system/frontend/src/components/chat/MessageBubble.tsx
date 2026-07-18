@@ -13,7 +13,7 @@
  */
 
 import { useState } from "react";
-import { Bot, AlertTriangle, ChevronDown } from "lucide-react";
+import { Bot, AlertTriangle, ChevronDown, RotateCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/types/chat";
 import { SourceCard } from "./SourceCard";
@@ -26,12 +26,21 @@ interface MessageBubbleProps {
   message: ChatMessage;
   /** 是否为流式输出中的临时消息 */
   streaming?: boolean;
+  /** 是否显示"重新生成"按钮（仅最后一条 AI 消息显示） */
+  showRegenerate?: boolean;
+  /** 重新生成是否正在进行中（禁用按钮） */
+  regenerating?: boolean;
+  /** 点击"重新生成"回调 */
+  onRegenerate?: () => void;
 }
 
 /** MessageBubble 组件 */
 export function MessageBubble({
   message,
   streaming = false,
+  showRegenerate = false,
+  regenerating = false,
+  onRegenerate,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const sources = message.sources || [];
@@ -130,11 +139,32 @@ export function MessageBubble({
           </div>
         )}
 
-        {/* 时间戳 */}
+        {/* 时间戳 + 操作按钮（重新生成） */}
         {!streaming && (
-          <span className="text-xs text-ink-tertiary">
-            {formatTime(message.created_at)}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-ink-tertiary">
+              {formatTime(message.created_at)}
+              {message.is_regenerated && " · 已重新生成"}
+            </span>
+            {/* 重新生成按钮：仅最后一条 AI 消息显示，流式输出中禁用 */}
+            {showRegenerate && onRegenerate && !isUser && (
+              <button
+                type="button"
+                onClick={onRegenerate}
+                disabled={regenerating}
+                className={cn(
+                  "flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-ink-tertiary transition-colors",
+                  "hover:bg-muted hover:text-ink",
+                  regenerating && "cursor-not-allowed opacity-50",
+                )}
+                aria-label="重新生成"
+                title="重新生成此回答"
+              >
+                <RotateCw className={cn("h-3 w-3", regenerating && "animate-spin")} />
+                <span>{regenerating ? "生成中..." : "重新生成"}</span>
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>

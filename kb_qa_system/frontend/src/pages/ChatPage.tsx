@@ -18,7 +18,7 @@
  *   <ChatPage />  // 由路由 /chat 和 /chat/:conversationId 渲染
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   Menu,
@@ -63,6 +63,7 @@ export default function ChatPage() {
     selectConversation,
     startNewConversation,
     sendMessage,
+    regenerateMessage,
     stopStreaming,
     clearError,
   } = useChatStore();
@@ -602,6 +603,22 @@ export default function ChatPage() {
         ]
       : messages;
 
+  /**
+   * 知识库问答消息列表（chatStore.messages）中最后一条 assistant 消息 ID
+   *
+   * 作用：
+   *   仅最后一条 AI 消息显示"重新生成"按钮，避免每条消息都显示。
+   *   文档对话模式（inDocMode）不显示重新生成按钮（无对应 API）。
+   */
+  const lastAssistantMessageId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") {
+        return messages[i].id;
+      }
+    }
+    return null;
+  }, [messages]);
+
   return (
     <div className="flex h-screen overflow-hidden bg-canvas">
       {/* 侧边栏 - 桌面端固定，移动端抽屉 */}
@@ -725,7 +742,18 @@ export default function ChatPage() {
                     <div className="h-px flex-1 bg-line" />
                   </div>
                 ) : (
-                  <MessageBubble key={message.id} message={message} />
+                  <MessageBubble
+                    key={message.id}
+                    message={message}
+                    showRegenerate={
+                      !inDocMode &&
+                      !streaming &&
+                      message.role === "assistant" &&
+                      message.id === lastAssistantMessageId
+                    }
+                    regenerating={streaming}
+                    onRegenerate={() => regenerateMessage(message.id)}
+                  />
                 ),
               )}
               {kbStreamingMessage && (

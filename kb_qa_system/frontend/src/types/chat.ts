@@ -38,6 +38,16 @@ export interface QuestionRequest {
   idempotency_key?: string;
 }
 
+/** 重新生成请求（对齐后端 RegenerateRequest Schema） */
+export interface RegenerateRequest {
+  /** 会话ID（必填，正整数） */
+  conversation_id: number;
+  /** 要重新生成的 AI 消息ID（可选，不填则默认重新生成最后一条 AI 消息） */
+  message_id?: number;
+  /** 幂等性键，防止重复提交 */
+  idempotency_key?: string;
+}
+
 /** 回答响应（对齐后端 AnswerResponse Schema） */
 export interface AnswerResponse {
   /** 回答内容 */
@@ -70,6 +80,8 @@ export interface ChatMessage {
   is_degraded?: boolean;
   /** 降级原因 */
   degrade_reason?: string;
+  /** 是否为重新生成的消息 */
+  is_regenerated?: boolean;
 }
 
 /** 对话响应（对齐后端 ConversationResponse Schema） */

@@ -11,6 +11,7 @@ import { apiClient, type StreamCallbacks } from "./client";
 import { API_PATHS } from "@/utils/constants";
 import type {
   QuestionRequest,
+  RegenerateRequest,
   AnswerResponse,
   Conversation,
   ConversationListResponse,
@@ -47,6 +48,31 @@ export async function askStream(
 ): Promise<void> {
   return apiClient.streamPost(
     API_PATHS.CHAT_ASK_STREAM,
+    data,
+    callbacks,
+    signal,
+  );
+}
+
+/**
+ * 重新生成 AI 回答（流式 SSE）
+ *
+ * 调用 POST /chat/regenerate/stream，重新生成指定对话中的 AI 回答。
+ * 后端会删除原 AI 消息并重新生成，不保存新的用户消息。
+ *
+ * @param data - 重新生成请求（conversation_id 必填，message_id 可选）
+ * @param callbacks - SSE 事件回调（onSources/onChunk/onDone/onError）
+ * @param signal - AbortSignal，用于取消流式请求
+ * @throws HttpClientError 当请求失败（非 2xx）时抛出
+ * @throws DOMException 当通过 signal 取消时抛出 AbortError
+ */
+export async function regenerateStream(
+  data: RegenerateRequest,
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal,
+): Promise<void> {
+  return apiClient.streamPost(
+    API_PATHS.CHAT_REGENERATE_STREAM,
     data,
     callbacks,
     signal,
