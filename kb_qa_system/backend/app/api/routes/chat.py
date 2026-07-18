@@ -913,8 +913,17 @@ async def regenerate_answer_stream(
             finally:
                 post_db.close()
 
-        except Exception:
-            logger.exception("重新生成流式问答处理异常，保存部分回答")
+        except Exception as regen_err:
+            # 重新生成异常：记录详细错误类型和消息，便于排查
+            # 作用：原实现仅记日志，前端只看到通用错误提示；
+            #       改进后区分异常类型（LLM 服务/数据库/其他），日志中携带可定位信息
+            err_type = type(regen_err).__name__
+            err_module = type(regen_err).__module__
+            logger.exception(
+                f"重新生成流式问答处理异常: type={err_type}, module={err_module}, "
+                f"conv_id={conv_id}, parent_msg_id={parent_msg_id}, "
+                f"has_partial={bool(full_answer.strip())}"
+            )
 
             # 保存部分回答（仅当有实际内容时）
             if full_answer.strip():
@@ -939,9 +948,12 @@ async def regenerate_answer_stream(
                 except Exception:
                     pass
 
+            # 错误事件：包含异常类型，前端可显示更具体的提示
+            # 作用：通用错误提示用户友好，但日志中已有详细信息供开发者排查
             error_data = {
                 "type": "error",
                 "content": "抱歉，重新生成过程中出现错误，请稍后重试",
+                "error_type": err_type,
             }
             yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
 

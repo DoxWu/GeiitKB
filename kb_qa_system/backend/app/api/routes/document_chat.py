@@ -561,6 +561,28 @@ async def ask_document_stream(
     history_raw = RedisManager.get(history_key)
     history = history_raw if isinstance(history_raw, list) else []
 
+    # 修复上下文丢失：Redis 历史为空时，从数据库 Message 表加载历史作为 fallback
+    # 作用：Redis TTL 过期（1 小时）或 session_id 切换导致历史丢失时，
+    #       从数据库恢复历史，避免 LLM 看不到之前的对话导致上下文丢失
+    # 触发条件：Redis 历史为空 + 前端传入了 conversation_id（说明是已有对话的延续）
+    if not history and request_data.conversation_id:
+        try:
+            db_messages = db.query(Message).filter(
+                Message.conversation_id == request_data.conversation_id,
+            ).order_by(Message.created_at.asc()).all()
+            for msg in db_messages:
+                history.append({"role": msg.role, "content": msg.content})
+            if history:
+                # 回写 Redis 缓存，避免下次请求再次查库
+                RedisManager.set(history_key, history, ttl=DOC_CHAT_SESSION_TTL)
+                logger.info(
+                    f"从数据库恢复文档对话历史: conversation_id={request_data.conversation_id}, "
+                    f"msgs={len(history)}"
+                )
+        except Exception as e:
+            # 数据库历史加载失败不阻塞主流程，使用空历史继续生成
+            logger.warning(f"从数据库加载文档对话历史失败: {e}")
+
     # 4. 构造 LangChain 消息列表
     # 结构：[SystemMessage, ...history, HumanMessage(question)]
     messages: list = [SystemMessage(content=system_prompt)]
