@@ -8,16 +8,20 @@
 
 import { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { Loader2 } from "lucide-react";
+import { Loader2, AlertTriangle } from "lucide-react";
 import { AuthLayout } from "@/components/auth/AuthLayout";
 import { LoginForm } from "@/components/auth/LoginForm";
 import { useAuthStore } from "@/store/authStore";
+import { safeStorage } from "@/utils/safeStorage";
 
 /** LoginPage 组件 */
 export default function LoginPage() {
   const navigate = useNavigate();
   const { isAuthenticated, error, guestLogin, loading } = useAuthStore();
   const [guestLoading, setGuestLoading] = useState(false);
+
+  // 存储降级提示（国产浏览器隐私模式阻止 localStorage 时显示）
+  const storageWarning = safeStorage.getDegradedMessage();
 
   // 已登录则重定向
   useEffect(() => {
@@ -60,6 +64,13 @@ export default function LoginPage() {
         </p>
       }
     >
+      {/* 存储降级警告（国产浏览器隐私模式阻止 localStorage 时显示） */}
+      {storageWarning && (
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5">
+          <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-500" />
+          <p className="text-sm text-amber-700">{storageWarning}</p>
+        </div>
+      )}
       {/* 全局错误提示（来自 store） */}
       {error && (
         <div className="mb-4 rounded-lg border border-danger/20 bg-red-50 px-4 py-2.5">

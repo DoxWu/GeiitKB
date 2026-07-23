@@ -15,6 +15,7 @@
  */
 
 import { API_BASE_URL, TOKEN_STORAGE_KEY } from "@/utils/constants";
+import { safeStorage } from "@/utils/safeStorage";
 import type { TokenResponse, RefreshTokenResponse } from "@/types/user";
 import type { ApiError, RequestOptions } from "@/types/api";
 
@@ -42,7 +43,7 @@ let refreshPromise: Promise<string | null> | null = null;
  */
 export function getStoredTokens(): TokenResponse | null {
   try {
-    const raw = localStorage.getItem(TOKEN_STORAGE_KEY);
+    const raw = safeStorage.getItem(TOKEN_STORAGE_KEY);
     return raw ? (JSON.parse(raw) as TokenResponse) : null;
   } catch {
     return null;
@@ -54,7 +55,7 @@ export function getStoredTokens(): TokenResponse | null {
  * @param tokens - Token 响应对象
  */
 export function storeTokens(tokens: TokenResponse): void {
-  localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(tokens));
+  safeStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(tokens));
 }
 
 /**
@@ -77,7 +78,7 @@ export function updateTokens(refreshResponse: RefreshTokenResponse): void {
 
 /** 清除 Token（登出或刷新失败时调用） */
 export function clearTokens(): void {
-  localStorage.removeItem(TOKEN_STORAGE_KEY);
+  safeStorage.removeItem(TOKEN_STORAGE_KEY);
 }
 
 /** Token 过期回调（由 authStore 注册，用于跳转登录） */

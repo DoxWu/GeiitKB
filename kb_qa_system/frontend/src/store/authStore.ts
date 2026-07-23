@@ -21,6 +21,7 @@ import {
   registerTokenExpiredCallback,
 } from "@/api/client";
 import { TOKEN_STORAGE_KEY, USER_STORAGE_KEY } from "@/utils/constants";
+import { safeStorage } from "@/utils/safeStorage";
 import type { TokenResponse, UserResponse, LoginRequest } from "@/types/user";
 import { useDocumentStore } from "@/store/documentStore";
 
@@ -60,8 +61,8 @@ function restoreFromStorage(): {
   user: UserResponse | null;
 } {
   try {
-    const tokensRaw = localStorage.getItem(TOKEN_STORAGE_KEY);
-    const userRaw = localStorage.getItem(USER_STORAGE_KEY);
+    const tokensRaw = safeStorage.getItem(TOKEN_STORAGE_KEY);
+    const userRaw = safeStorage.getItem(USER_STORAGE_KEY);
     const tokens = tokensRaw ? (JSON.parse(tokensRaw) as TokenResponse) : null;
     const user = userRaw ? (JSON.parse(userRaw) as UserResponse) : null;
     return { tokens, user };
@@ -89,12 +90,12 @@ export const useAuthStore = create<AuthState>((set) => ({
       //   在设置新用户状态之前调用，确保新会话从干净状态开始。
       useDocumentStore.getState().reset();
 
-      // 持久化到 localStorage
-      localStorage.setItem(
+      // 持久化到安全存储（兼容国产浏览器的 localStorage 降级）
+      safeStorage.setItem(
         TOKEN_STORAGE_KEY,
         JSON.stringify(tokenResponse),
       );
-      localStorage.setItem(
+      safeStorage.setItem(
         USER_STORAGE_KEY,
         JSON.stringify(tokenResponse.user),
       );
@@ -122,12 +123,12 @@ export const useAuthStore = create<AuthState>((set) => ({
       // 修复问题三：登录前清除前一个用户的文档数据（与 login 一致）
       useDocumentStore.getState().reset();
 
-      // 持久化到 localStorage（与 login 一致）
-      localStorage.setItem(
+      // 持久化到安全存储（与 login 一致）
+      safeStorage.setItem(
         TOKEN_STORAGE_KEY,
         JSON.stringify(tokenResponse),
       );
-      localStorage.setItem(
+      safeStorage.setItem(
         USER_STORAGE_KEY,
         JSON.stringify(tokenResponse.user),
       );
@@ -158,7 +159,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       // 防止切换账户后数据残留（如普通账户→游客→换回时分支丢失或看到他人分支）
       useDocumentStore.getState().reset();
       clearTokens();
-      localStorage.removeItem(USER_STORAGE_KEY);
+      safeStorage.removeItem(USER_STORAGE_KEY);
       set({
         user: null,
         tokens: null,
@@ -181,7 +182,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       // 清除本地状态（不调用 logout API，避免重复黑名单请求）
       useDocumentStore.getState().reset();
       clearTokens();
-      localStorage.removeItem(USER_STORAGE_KEY);
+      safeStorage.removeItem(USER_STORAGE_KEY);
       set({
         user: null,
         tokens: null,
@@ -216,7 +217,7 @@ export const useAuthStore = create<AuthState>((set) => ({
  * 作用：当 Token 刷新失败时，清除认证状态，触发路由守卫跳转登录页
  */
 registerTokenExpiredCallback(() => {
-  localStorage.removeItem(USER_STORAGE_KEY);
+  safeStorage.removeItem(USER_STORAGE_KEY);
   useDocumentStore.getState().reset();
   useAuthStore.setState({
     user: null,
