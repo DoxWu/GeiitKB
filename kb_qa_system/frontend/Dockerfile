@@ -40,8 +40,8 @@ RUN npm ci --legacy-peer-deps --no-cache || npm install --legacy-peer-deps --no-
 COPY . .
 
 # 构建时注入 API 基础地址
-# 反代模式默认 /api/v1（前端同源访问，由 nginx 转发到后端）
-# 如需跨域模式，构建时传入完整 URL：https://your-backend.up.railway.app/api/v1
+# 默认同源 /api/v1（配合 nginx 反代使用）
+# Railway 部署：设为后端服务的公网 URL，如 https://your-backend.up.railway.app/api/v1
 ARG VITE_API_BASE_URL=/api/v1
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 ARG VITE_APP_TITLE=GeiIt企业知识库
@@ -58,12 +58,11 @@ FROM nginx:1.25-alpine AS runtime
 LABEL maintainer="kb-qa-system"
 LABEL description="GeiIt企业知识库前端（React + nginx）"
 
-# 安装 curl（健康检查）+ gettext（envsubst 变量替换）
-# 作用：envsubst 用于在容器启动时将 BACKEND_URL 替换到 nginx 配置中
-RUN apk add --no-cache curl gettext
+# 安装 curl 用于健康检查
+RUN apk add --no-cache curl
 
-# 复制 nginx 配置为模板（启动时由 start.sh 通过 envsubst 替换变量）
-COPY nginx.conf /etc/nginx/conf.d/default.conf.template
+# 复制 nginx 配置和启动脚本
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY start.sh /app/start.sh
 
 # 设置启动脚本权限 + 限制 nginx worker 数量为 1（Railway 容器资源有限）
