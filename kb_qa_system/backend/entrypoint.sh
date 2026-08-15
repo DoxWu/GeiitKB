@@ -16,6 +16,24 @@
 
 set -e  # 任何命令失败立即退出
 
+# --------------------------------------------
+# 存储卷权限修复（K8s / Sealos 部署）
+# --------------------------------------------
+# 问题：K8s 存储卷（PVC）挂载到 /app/uploads、/app/data 时，挂载点属主为
+#       root:root（0755），非 root 用户 kbapp 无法写入，导致文档上传报
+#       [Errno 13] Permission denied。
+# 修复：容器以 root 启动时先 chown 这些目录给 kbapp，再降权为 kbapp 重新运行。
+#       本地 docker-compose 的命名卷已继承镜像目录权限，此处的 chown 为无害操作。
+if [ "$(id -u)" = "0" ]; then
+    echo "🔧 修复上传/数据目录权限（/app/uploads、/app/data）..."
+    mkdir -p /app/uploads /app/data
+    chown -R kbapp:kbapp /app/uploads /app/data
+    echo "🔻 降权为 kbapp 用户重新启动..."
+    KBAPP_UID="$(id -u kbapp)"
+    KBAPP_GID="$(id -g kbapp)"
+    exec setpriv --reuid="${KBAPP_UID}" --regid="${KBAPP_GID}" --clear-groups -- "$0"
+fi
+
 # 默认角色
 ROLE="${ROLE:-api}"
 

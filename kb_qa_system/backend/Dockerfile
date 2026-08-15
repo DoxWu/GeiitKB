@@ -99,6 +99,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     curl \
     tzdata \
+    util-linux \
     && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && echo "Asia/Shanghai" > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
@@ -127,7 +128,11 @@ COPY --chown=kbapp:kbapp . /app/
 RUN chmod +x /app/entrypoint.sh && \
     mkdir -p /app/uploads /app/data && \
     chown -R kbapp:kbapp /app/uploads /app/data
-USER kbapp
+# 注意：不在此处切换 USER kbapp。
+# K8s/Sealos 的存储卷（PVC）在运行时才挂载，会覆盖镜像中的 /app/uploads、/app/data
+# 目录权限（变为 root:root）。因此入口脚本 entrypoint.sh 以 root 启动，
+# 在运行时 chown 目录后再通过 setpriv 降权为 kbapp 运行应用。
+
 
 # 暴露端口：FastAPI 8000，Flower 5555
 EXPOSE 8000 5555
